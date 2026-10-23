@@ -195,7 +195,7 @@ class PathSafetyTests(BATest):
                             capture_output=True, text=True)
         self.assertEqual(ok.returncode, 0, ok.stdout + ok.stderr)
         self.assertEqual((p.root / "state/inbox/x.json").read_text(encoding="utf-8"), "[1,2,3]")
-        for bad in ("state/workflow.json", "../evil.json", "requirements/REQ-001.json", "state/audit.jsonl"):
+        for bad in ("state/workflow.json", "../evil.json", "atomic-requirements/REQ-001.json", "state/audit.jsonl"):
             r = subprocess.run([sys.executable, sw, "--root", str(p.root), "--path", bad, "--content-file", str(f)], capture_output=True, text=True)
             self.assertEqual(r.returncode, 1, bad)
             self.assertFalse(json.loads(r.stdout)["ok"])

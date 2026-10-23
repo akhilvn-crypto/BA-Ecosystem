@@ -27,6 +27,8 @@ For each requirement produce (a JSON list, saved to `<project>/state/inbox/reqs.
 
 Then: `req add --file …` (IDs `REQ-001…` are assigned for you) → `req pairs` (cross-check candidates) → `req commit` (validates schema, IDs, source references; stage → `REQUIREMENTS_READY`).
 
+**Where they are saved:** the core writes every requirement to `<project>/atomic-requirements/REQ-nnn.md` (readable) and `.json` (authoritative). Never write requirement files yourself. After `req commit`, use its `saved_to` and `files_on_disk` values, confirm the folder exists by listing it with your own file tools, and tell the user the full folder path. If the folder is empty or missing, say so plainly and stop — do not claim the requirements were saved.
+
 Tell the user how many requirements were created and anything flagged. For large BRDs you may delegate a section range to the optional `ba-agent:requirement-analyst` agent (it writes a JSON file and returns a short summary — you still run `req add`).
 
 Next: `gap-analysis`.

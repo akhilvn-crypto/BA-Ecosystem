@@ -5,7 +5,7 @@ description: Select the BRD and project folder, verify access, detect the file f
 
 # BRD ingestion
 
-1. **Source and output folder** (ask in one message if not known): BRD path; output folder (propose `<BRD folder>/ba-output/<name>`). Confirm both back to the user. The BRD stays where it is.
+1. **Source and output folder** (ask in one message if not known): BRD path; output folder (propose the BRD's own folder, i.e. the folder the user attached in Cowork, so the results appear right inside it). Confirm both back to the user. The BRD stays where it is.
 2. **Access check:** you must be able to read the BRD and create files in the output folder with this surface's tools. If not, say so and offer a supported alternative (Cowork desktop with a selected folder, or Claude Code CLI). Do not continue as if it worked.
 3. **Formats:** Markdown, plain text and DOCX are supported. PDF, DOC, RTF and XLSX are **not** (no extraction library without installing packages) — ask for a `.docx`/`.md`/`.txt` export; offer to install a PDF library only if the user wants that, and ask first. Images and headers/footers inside DOCX are not extracted — relay the warning if shown.
 4. **Initialise:**

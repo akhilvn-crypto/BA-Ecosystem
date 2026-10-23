@@ -45,4 +45,4 @@ Run `status` at the start of every session and after big steps; its `NEXT:` line
 7. **Honest status.** Deferred is not resolved. Do not call the workflow complete while `complete` says otherwise.
 8. **Load only what you need:** one section (`source section`), one gap packet, one story at a time. Do not paste the whole BRD into every step.
 
-See `references/ba-principles.md`, `references/artifact-integrity.md`, `references/human-approval.md`.
+See `references/ba-principles.md`, `references/artifact-integrity.md`, `references/human-approval.md`, and `references/choice-prompts.md` (read before showing any `AskUserQuestion` dialog: long details go in chat, the dialog stays short).

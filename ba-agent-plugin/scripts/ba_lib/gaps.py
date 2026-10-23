@@ -207,7 +207,7 @@ def _packet(p, g: dict, reqmap: dict) -> dict:
     }
 
 
-def next_gaps(p, limit: int = 3) -> dict:
+def next_gaps(p, limit: int = 1) -> dict:
     require_owner(p)
     gaps = p.gaps()
     reqmap = {r["requirement_id"]: r for r in p.requirements()}

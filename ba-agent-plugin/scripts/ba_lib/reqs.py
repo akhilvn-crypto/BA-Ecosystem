@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 from . import conflicts, ingest, schema
+from .project import REQ_DIR
 from .util import BAError, ist_now_iso, normalize_ws, require_identity
 
 TYPES = ["FUNCTIONAL", "BUSINESS_RULE", "DATA", "VALIDATION", "INTEGRATION", "SECURITY", "NON_FUNCTIONAL",
@@ -244,7 +245,10 @@ def commit_requirements(p) -> dict:
     if p.state["stage"] == "BRD_PARSED":
         p.audit("REQUIREMENTS_COMMITTED", count=len(active))
         p.set_stage("REQUIREMENTS_READY", "atomic-requirements-saved")
-    return {"requirements": len(active), "stage": p.state["stage"]}
+    folder = p.path(REQ_DIR)
+    files = sorted(x.name for x in folder.glob("REQ-*") if x.suffix in (".md", ".json"))
+    return {"requirements": len(active), "stage": p.state["stage"], "saved_to": str(folder), "files_on_disk": len(files),
+            "note": "Tell the user this exact folder path and that each requirement is saved as REQ-nnn.md (readable) and REQ-nnn.json."}
 
 
 def pairs_report(p) -> dict:

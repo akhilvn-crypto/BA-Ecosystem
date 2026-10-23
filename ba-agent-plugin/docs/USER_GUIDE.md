@@ -7,30 +7,30 @@ claude --plugin-dir D:\BA-Agents\ba-agent-plugin
 > /ba-agent:start D:\docs\MyProject-BRD.docx
 ```
 
-Claude greets you, proposes an output folder (default `<BRD folder>/ba-output/<name>`) and asks you to confirm it. Nothing is written elsewhere; your BRD is never changed. If the BRD is a PDF you will be asked for a `.docx`/`.md`/`.txt` export.
+Claude greets you, proposes an output folder (default: the folder that contains your BRD, i.e. the folder you attached) and asks you to confirm it. Nothing is written elsewhere; your BRD is never changed. If the BRD is a PDF you will be asked for a `.docx`/`.md`/`.txt` export.
 
 ## 2. What you will be asked
 
 1. **Decision owner** — "Who will make/confirm the business decisions for these gaps? Name and role." (Before the first gap is shown.) If you do not know yet you can pause, or continue with analysis only.
-2. **Gaps** — up to three at a time, each with evidence, why it matters, and one question. Answer in your own words, or: ask for a rewording, **defer**, or **skip for now**.
+2. **Gaps** — one at a time, each with evidence, why it matters, and one question in a prompt with a text box. Type your answer in your own words, or choose: ask for a rewording, **defer**, or **skip for now**.
 3. **Closing a gap** — Claude summarises the meaning it will record and asks you to confirm and to state your name and role as the person closing it. If the answer contradicts the BRD or an earlier decision you are asked to clarify, explicitly confirm a change (named authoriser), or defer.
 4. **Baseline** — you confirm the consolidated requirements baseline.
-5. **Stories** — one at a time: **approve**, **edit**, or **defer**. Say "approve" in your own words; Claude records them. Edits create a new version that needs approval again.
+5. **Stories** — one at a time, each in a prompt with a text box. Type **approve**, type your **suggestions**, or type **not approved** (or pick **defer**). Claude records your own words. Suggestions create a new story version that is shown again and needs approval again; a story you did not approve never reaches `stories/approved/`.
 
 ## 3. Where things are saved
 
 ```
 <project>/
   extracted/    BRD outline + fingerprint metadata
-  requirements/ REQ-001.json|md …              (atomic requirements)
+  atomic-requirements/ REQ-001.md|json …       (atomic requirements; open the .md files)
   gaps/         gap-register.json, GAP-001.md …
   decisions/    decision-log.jsonl, DEC-001.md …
   baselines/    baseline-v1.json|md, baseline-manifest.json
-  stories/      candidates/  approved/  deferred/  archive/
+  stories/      candidates/  approved/  unapproved/  deferred/  archive/
   reports/      workflow-summary.md, traceability-report.md
   state/        workflow.json, audit.jsonl (IST), pending/, backups/, inbox/
 ```
-**Only `stories/approved/` holds approved work.** `archive/` keeps every superseded story version.
+**Only `stories/approved/` holds approved work.** Stories you marked *not approved* are saved in `stories/unapproved/` (with your note in their review history); open gaps are in `gaps/` (one `GAP-xxx.md` each plus `gap-register.json`). `archive/` keeps every superseded story version.
 
 ## 4. Resume, status, review
 

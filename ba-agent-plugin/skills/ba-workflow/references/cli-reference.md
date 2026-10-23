@@ -16,7 +16,7 @@
 | `req confirm ID --note N` · `req remove ID --reason R --by-name --by-role` | After BRD change: still valid / dropped (kept as `REMOVED`). |
 | `owner set --name N --role R [--gap GAP-ID] [--statement S]` · `owner unknown --choice pause\|analysis-only` · `owner show` | Decision owner (default or per-gap). |
 | `gaps add --file gaps.json` | Items: `category` (taxonomy), `title, description, evidence, why_it_matters, question, impacted_requirement_ids[], priority CRITICAL\|HIGH\|MEDIUM\|LOW, priority_rationale, material?` |
-| `gaps commit --cross-pass-done` · `gaps next [--limit 3]` · `gaps list [--status S]` | Finish analysis · present gaps (**needs owner**) · list. |
+| `gaps commit --cross-pass-done` · `gaps next [--limit 1]` · `gaps list [--status S]` | Finish analysis · present gaps (**needs owner**) · list. |
 | `gap show ID` · `gap answer ID --response T [--respondent-name --respondent-role]` | Store raw answer; returns `candidate_conflicts`. |
 | `gap followup ID --answer-id A1 --note N` · `gap conflict ID --answer-id A1 --with REQ-003,DEC-001 --description D` | Incomplete answer · record a conflict. |
 | `gap resolve ID --answer-id A1 --interpretation T --closed-by-name N --closed-by-role R --closure-summary S --confirmation "<closer's words>" [--conflict-status PASSED\|CHANGE_CONFIRMED] [--reviewed IDS] [--conflicting IDS --change-by-name --change-by-role --change-statement T --requirement-updates FILE] [--owner-confirmation T]` | The only way to `RESOLVED`. Writes decision + IST audit event atomically (journaled). |
@@ -24,9 +24,9 @@
 | `policy set --carry-forward true\|false --by-name --by-role --statement T` | Allow non-blocking unresolved gaps to be carried (explicit human acceptance). |
 | `baseline create [--summary S]` · `baseline confirm --version N --by-name --by-role --statement T` · `baseline show [--version N]` | Versioned baseline (`PROPOSED` → human `APPROVED`). Unchanged inputs are reused. |
 | `story add --file stories.json` | Items: `title, user_story{role,capability,value}, acceptance_criteria[] ("Given…when…then…"), requirement_ids[], dependencies, assumptions, notes{business_rules,validation_exceptions,non_functional}`. |
-| `story next [--id US-001] [--deferred] [--batch N]` · `story show ID` | Present for review (marks `IN_REVIEW`). |
+| `story next [--id US-001] [--deferred] [--unapproved] [--batch N]` · `story show ID` | Present for review (marks `IN_REVIEW`). Default is one story: show it in chat, then ask in a short `AskUserQuestion` with a text box (approve / suggestions / not approved). `--unapproved` lists stories in `stories/unapproved/`. |
 | `story approve ID --version N --statement "<human words>" [--approver-name --approver-role]` | Exact version; writes to `stories/approved/`. |
 | `story edit ID --file changes.json --reason R` | New version → needs new approval. Editable: title, user_story, acceptance_criteria, requirement_ids, dependencies, assumptions, notes. |
-| `story defer ID --version N [--reason R]` · `story revisit ID` · `story request-changes ID --version N --note N` · `story confirm-unaffected ID --statement S` | Review lifecycle / clear an impact flag. |
+| `story defer ID --version N [--reason R]` · `story revisit ID` · `story request-changes ID --version N --note N` (saves to `stories/unapproved/`) · `story confirm-unaffected ID --statement S` | Review lifecycle / clear an impact flag. |
 
 Common `error.code`s: `OWNER_REQUIRED`, `OWNER_UNKNOWN`, `IDENTITY_REQUIRED`, `MISSING_METADATA`, `NOT_PRESENTED`, `ANSWER_INCOMPLETE`, `CONFLICT_REVIEW_REQUIRED`, `CONFLICT_UNRESOLVED`, `AWAITING_OWNER_CONFIRMATION`, `REQUIREMENT_UPDATE_REQUIRED`, `CLOSURE_IN_PROGRESS` (run `recover`), `EXCERPT_NOT_FOUND`, `UNSUPPORTED_FORMAT`, `SOURCE_CHANGED`, `IMPACT_REVIEW_PENDING`, `BASELINE_STALE`, `REQUIREMENT_BLOCKED`, `ACCEPTANCE_FORMAT`, `VERSION_MISMATCH`, `APPROVAL_EVIDENCE_REQUIRED`, `OPEN_GAPS`, `WRITE_FAILED`, `CLOCK_UNRELIABLE`, `PATH_ESCAPE`, `SOURCE_PROTECTED`.

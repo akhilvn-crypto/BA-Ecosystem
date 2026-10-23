@@ -81,7 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
     grp("owner", {"set": [opt("--name"), opt("--role"), opt("--gap"), opt("--statement")],
                   "unknown": [opt("--choice", default="pause")], "show": []})
     grp("gaps", {"add": [opt("--file")], "commit": [opt("--cross-pass-done", action="store_true")],
-                 "next": [opt("--limit", type=int, default=3)], "list": [opt("--status")]})
+                 "next": [opt("--limit", type=int, default=1)], "list": [opt("--status")]})
     resolve_opts = [pos("id"), opt("--answer-id"), opt("--interpretation"), opt("--interpretation-file"), opt("--closed-by-name"),
                     opt("--closed-by-role"), opt("--closure-summary"), opt("--confirmation"), opt("--confirmation-file"),
                     opt("--conflict-status", default="PASSED"), opt("--conflicting"), opt("--reviewed"),
@@ -100,7 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
                      "confirm": [opt("--version", type=int), opt("--by-name"), opt("--by-role"), opt("--statement")],
                      "show": [opt("--version", type=int)]})
     grp("story", {"add": [opt("--file")], "show": [pos("id")],
-                  "next": [opt("--id"), opt("--deferred", action="store_true"), opt("--batch", type=int, default=1)],
+                  "next": [opt("--id"), opt("--deferred", action="store_true"), opt("--unapproved", action="store_true"), opt("--batch", type=int, default=1)],
                   "approve": [pos("id"), opt("--version", type=int), opt("--statement"), opt("--approver-name"), opt("--approver-role")],
                   "edit": [pos("id"), opt("--file"), opt("--reason")],
                   "defer": [pos("id"), opt("--version", type=int), opt("--reason")], "revisit": [pos("id")],
@@ -242,7 +242,7 @@ def run(a) -> dict | str:
         if act == "add":
             return storymod.add_stories(p, _json_file(a.file))
         if act == "next":
-            return storymod.next_story(p, a.id, a.deferred, a.batch)
+            return storymod.next_story(p, a.id, a.deferred, a.batch, a.unapproved)
         if act == "show":
             return storymod._load(p, a.id)[1]
         if act == "approve":

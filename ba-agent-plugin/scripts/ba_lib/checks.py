@@ -5,13 +5,14 @@ import json
 from pathlib import Path
 
 from . import gaps as gapmod, schema
+from .project import REQ_DIR
 from .util import BAError, human_ist, is_ist_iso, ist_now_iso, read_jsonl, normalize_ws
 
 REQ_ACTIVE = ("ACTIVE", "NEEDS_REVIEW")
 CLOSURE_FIELDS = ["decision_id", "resolution", "decision_owner_name", "decision_owner_role", "closed_by_name",
                   "closed_by_role", "closed_at_ist", "closure_summary", "closure_validation"]
-BUCKET_STATUS = {"candidates": {"CANDIDATE", "IN_REVIEW", "CHANGES_REQUESTED", "BLOCKED"}, "approved": {"APPROVED"},
-                 "deferred": {"DEFERRED"}}
+BUCKET_STATUS = {"candidates": {"CANDIDATE", "IN_REVIEW", "BLOCKED"}, "approved": {"APPROVED"},
+                 "unapproved": {"CHANGES_REQUESTED"}, "deferred": {"DEFERRED"}}
 
 
 def validate_project(p) -> dict:
@@ -32,7 +33,7 @@ def validate_project(p) -> dict:
             W.append(f"{r['requirement_id']}: no source excerpt recorded")
         if r["source_fingerprint"] != st["source"]["fingerprint"] and r["status"] == "ACTIVE" and not st["impact_review"].get("pending"):
             E.append(f"{r['requirement_id']}: source fingerprint differs from the project source fingerprint")
-        if not p.exists(f"requirements/{r['requirement_id']}.md"):
+        if not p.exists(f"{REQ_DIR}/{r['requirement_id']}.md"):
             W.append(f"{r['requirement_id']}: rendered .md missing")
     # ---- gaps / decisions / audit
     gaps = p.gaps()
@@ -164,7 +165,7 @@ def traceability(p, write: bool = False) -> dict:
     cover = {r: {"approved": [], "candidate": [], "deferred": []} for r in active}
     orphans, dangling, dupes, titles = [], [], [], {}
     for bucket, s in p.all_stories():
-        key = {"approved": "approved", "candidates": "candidate", "deferred": "deferred"}[bucket]
+        key = {"approved": "approved", "candidates": "candidate", "unapproved": "candidate", "deferred": "deferred"}[bucket]
         valid = [r for r in s["requirement_ids"] if r in active]
         for r in s["requirement_ids"]:
             if r not in rids:
@@ -296,6 +297,7 @@ def next_action(p, v: dict | None = None) -> str:
     cand = [s for b, s in stories if b == "candidates"]
     if cand:
         return f"{len(cand)} story(ies) await review: `story next`."
+    unapproved = [s for b, s in stories if b == "unapproved"]
     deferred = [s for b, s in stories if b == "deferred"]
     comp = completion(p)
     if comp["complete"]:
@@ -304,6 +306,9 @@ def next_action(p, v: dict | None = None) -> str:
         return "All work is approved. Run `complete` to close the workflow."
     if comp["uncovered"]:
         return f"Requirements without stories: {', '.join(comp['uncovered'])} — generate stories (`story add`)."
+    if unapproved:
+        return (f"{len(unapproved)} unapproved story(ies) in stories/unapproved/: ask what should change "
+                "(`story next --unapproved`, then `story edit`).")
     if deferred:
         return f"{len(deferred)} deferred story(ies): revisit with `story next --deferred`."
     return "Resolve/defer remaining blocked requirements: " + "; ".join(comp["reasons"][:3])
@@ -328,7 +333,7 @@ def completion(p) -> dict:
     if t["not_covered_by_approved_story"]:
         reasons.append(f"requirements without an approved story: {', '.join(t['not_covered_by_approved_story'])}")
     stories = p.all_stories()
-    pend = [s["story_id"] for b, s in stories if b in ("candidates", "deferred")]
+    pend = [s["story_id"] for b, s in stories if b in ("candidates", "unapproved", "deferred")]
     if pend:
         reasons.append(f"stories not approved: {', '.join(sorted(set(pend)))}")
     flagged = [s["story_id"] for _, s in stories if (s.get("impact_review") or {}).get("pending")]
@@ -360,6 +365,7 @@ def status_report(p) -> dict:
                      "stale": m["stale"], "stale_reason": m["stale_reason"]},
         "stories": {"candidate": sum(1 for b, _ in stories if b == "candidates"),
                     "approved": sum(1 for b, _ in stories if b == "approved"),
+                    "unapproved": sum(1 for b, _ in stories if b == "unapproved"),
                     "deferred": sum(1 for b, _ in stories if b == "deferred"),
                     "flagged_for_impact_review": sorted({s["story_id"] for _, s in stories if (s.get("impact_review") or {}).get("pending")})},
         "impact_review_pending": st["impact_review"].get("pending", False),

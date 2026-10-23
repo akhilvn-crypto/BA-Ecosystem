@@ -57,6 +57,45 @@ class TransitionTableTests(BATest):
         self.assertEqual(code_of(stories.approve, p, "US-001", 1, "approve"), "STORY_DEFERRED")
 
 
+class UnapprovedStoryTests(BATest):
+    """'Not approved' stories are saved in their own folder, never in approved/."""
+
+    def test_not_approved_story_is_saved_in_unapproved_folder(self):
+        p = self.to_stories()
+        stories.next_story(p)
+        out = stories.request_changes(p, "US-001", 1, "criteria too vague")
+        self.assertEqual(out["location"], "stories/unapproved/US-001.md")
+        self.assertTrue(p.exists("stories/unapproved/US-001.json") and p.exists("stories/unapproved/US-001.md"))
+        self.assertFalse(p.exists("stories/candidates/US-001.json"))
+        self.assertFalse(p.exists("stories/approved/US-001.json"))
+        self.assertEqual(code_of(stories.approve, p, "US-001", 1, "approve"), "STORY_UNAPPROVED")
+        self.assertIn("US-001", p.state["pending_story_ids"])
+        self.assertEqual(checks.validate_project(p)["errors"], [])
+        self.assertNotIn("US-001", [s["story_id"] for s in stories.next_story(p, batch=10)["stories"]])
+        self.assertEqual([s["story_id"] for s in stories.next_story(p, unapproved=True)["stories"]], ["US-001"])
+
+    def test_editing_unapproved_story_makes_a_new_candidate_version(self):
+        p = self.to_stories()
+        stories.next_story(p)
+        stories.request_changes(p, "US-001", 1, "reword")
+        out = stories.edit(p, "US-001", {"title": "Reworded story title"}, "reword")
+        self.assertEqual(out["new_version"], 2)
+        self.assertFalse(p.exists("stories/unapproved/US-001.json"))
+        self.assertTrue(p.exists("stories/candidates/US-001.json"))
+        self.assertTrue(p.exists("stories/archive/US-001.v1.json"))
+
+
+    def test_legacy_changes_requested_story_is_migrated_on_open(self):
+        p = self.to_stories()
+        stories.next_story(p)
+        stories.request_changes(p, "US-001", 1, "x")
+        for ext in ("json", "md"):  # simulate a 1.0.0 project
+            p.path(f"stories/unapproved/US-001.{ext}").replace(p.path(f"stories/candidates/US-001.{ext}"))
+        q = projmod.Project.open(p.root)
+        self.assertTrue(q.exists("stories/unapproved/US-001.json"))
+        self.assertFalse(q.exists("stories/candidates/US-001.json"))
+
+
 class DecisionOwnerTests(BATest):
     """Tests 16: owner prompt before first gap."""
 

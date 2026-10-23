@@ -243,6 +243,26 @@ class ResumeTests(BATest):
         self.assertEqual(stories.add_stories(p, [self.story_item()])["created"], ["US-001"])
 
 
+class AtomicRequirementsFolderTests(BATest):
+    def test_requirements_saved_in_atomic_requirements_folder(self):
+        p = self.new_project()
+        reqs.add_requirements(p, self.req_items(p))
+        out = reqs.commit_requirements(p)
+        self.assertTrue((p.root / "atomic-requirements" / "REQ-001.md").exists())
+        self.assertFalse((p.root / "requirements").exists())
+        self.assertEqual(out["saved_to"], str(p.root / "atomic-requirements"))
+        self.assertGreater(out["files_on_disk"], 0)
+
+    def test_legacy_requirements_folder_is_migrated_on_open(self):
+        p = self.new_project()
+        reqs.add_requirements(p, self.req_items(p))
+        (p.root / "atomic-requirements").rename(p.root / "requirements")
+        p2 = Project.open(p.root)
+        self.assertTrue((p.root / "atomic-requirements" / "REQ-001.json").exists())
+        self.assertFalse((p.root / "requirements").exists())
+        self.assertEqual(len(p2.requirements()), len(self.req_items(p)))
+
+
 class SourceChangeTests(BATest):
     def test_unchanged_source_is_noop(self):
         p = self.to_baseline()
@@ -319,7 +339,7 @@ class SourceChangeTests(BATest):
         reqs.remove_requirement(p, "REQ-007", "Dropped from BRD", "Priya Nair", "Product Owner")
         reqs.source_accept(p, "Priya Nair", "Product Owner", "ok")
         self.assertEqual(p.requirement("REQ-007")["status"], "REMOVED")
-        self.assertTrue(p.exists("requirements/REQ-007.md"), "removed requirements are retained, never deleted")
+        self.assertTrue(p.exists("atomic-requirements/REQ-007.md"), "removed requirements are retained, never deleted")
 
 
 if __name__ == "__main__":

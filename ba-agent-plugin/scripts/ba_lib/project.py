@@ -56,9 +56,12 @@ STORY_TRANSITIONS = {
     "SUPERSEDED": set(),
 }
 
-DIRS = ["state", "state/backups", "state/pending", "extracted", "requirements", "gaps", "decisions", "baselines",
-        "stories/candidates", "stories/approved", "stories/deferred", "stories/archive", "reports"]
-UNRESOLVED_OK_STORY_BUCKETS = ("candidates", "approved", "deferred")
+REQ_DIR = "atomic-requirements"  # one folder the user can open; older projects used "requirements" (migrated on open)
+LEGACY_REQ_DIR = "requirements"
+
+DIRS = ["state", "state/backups", "state/pending", "extracted", REQ_DIR, "gaps", "decisions", "baselines",
+        "stories/candidates", "stories/approved", "stories/unapproved", "stories/deferred", "stories/archive", "reports"]
+UNRESOLVED_OK_STORY_BUCKETS = ("candidates", "approved", "unapproved", "deferred")
 
 
 def slugify(s: str) -> str:
@@ -137,8 +140,38 @@ class Project:
         p = cls(Path(root))
         if not (p.root / "state" / "workflow.json").exists():
             raise BAError("NOT_A_PROJECT", f"No BA project found at {p.root} (missing state/workflow.json).")
+        p._migrate_legacy_layout()
         p.state  # load + validate
         return p
+
+    def _migrate_legacy_layout(self) -> None:
+        self._migrate_unapproved_stories()
+        old, new = self.root / LEGACY_REQ_DIR, self.root / REQ_DIR
+        if old.is_dir() and not any(new.glob("REQ-*")) and any(old.glob("REQ-*")):
+            try:
+                if new.is_dir():
+                    new.rmdir()  # empty dir only; leave it alone if rmdir fails
+                old.rename(new)
+            except OSError as e:
+                raise BAError("MIGRATION_FAILED", f"Could not rename {old} to {new}: {e}")
+
+    def _migrate_unapproved_stories(self) -> None:
+        """Before 1.1.0 'not approved' stories stayed in stories/candidates/ with status CHANGES_REQUESTED."""
+        cand = self.root / "stories" / "candidates"
+        if not cand.is_dir():
+            return
+        dest = self.root / "stories" / "unapproved"
+        for f in sorted(cand.glob("US-*.json")):
+            try:
+                if json.loads(f.read_text(encoding="utf-8")).get("status") != "CHANGES_REQUESTED":
+                    continue
+                dest.mkdir(parents=True, exist_ok=True)
+                for ext in ("json", "md"):
+                    src = cand / f"{f.stem}.{ext}"
+                    if src.exists():
+                        src.replace(dest / src.name)
+            except (OSError, ValueError) as e:
+                raise BAError("MIGRATION_FAILED", f"Could not move {f.name} to stories/unapproved/: {e}")
 
     # ----------------------------------------------------------------- paths / IO
     def path(self, rel: str) -> Path:
@@ -199,7 +232,7 @@ class Project:
         try:
             st["pending_gap_ids"] = [g["gap_id"] for g in self.gaps() if g["status"] != "RESOLVED"] if self._has_register() else []
             st["pending_story_ids"] = sorted({s["story_id"] for b, s in self.all_stories()
-                                              if b in ("candidates", "deferred")})
+                                              if b in ("candidates", "unapproved", "deferred")})
         except BAError:
             pass
         self.write_json("state/workflow.json", st, "workflow_state")
@@ -275,19 +308,20 @@ class Project:
 
     # ----------------------------------------------------------- requirements
     def req_ids(self) -> list[str]:
-        return sorted(p.stem for p in self.path("requirements").glob("REQ-*.json"))
+        return sorted(p.stem for p in self.path(REQ_DIR).glob("REQ-*.json"))
 
     def requirements(self) -> list[dict]:
-        return [self.read_json(f"requirements/{i}.json") for i in self.req_ids()]
+        return [self.read_json(f"{REQ_DIR}/{i}.json") for i in self.req_ids()]
 
     def requirement(self, rid: str) -> dict:
-        if not re.match(r"^REQ-\d{3,}$", rid or "") or not self.exists(f"requirements/{rid}.json"):
+        if not re.match(r"^REQ-\d{3,}$", rid or "") or not self.exists(f"{REQ_DIR}/{rid}.json"):
             raise BAError("UNKNOWN_REQUIREMENT", f"Requirement {rid} does not exist.")
-        return self.read_json(f"requirements/{rid}.json")
+        return self.read_json(f"{REQ_DIR}/{rid}.json")
 
     def save_requirement(self, r: dict) -> None:
-        self.write_json(f"requirements/{r['requirement_id']}.json", r, "requirement")
-        self.write_text(f"requirements/{r['requirement_id']}.md", render.requirement_md(r))
+        self.path(REQ_DIR).mkdir(parents=True, exist_ok=True)
+        self.write_json(f"{REQ_DIR}/{r['requirement_id']}.json", r, "requirement")
+        self.write_text(f"{REQ_DIR}/{r['requirement_id']}.md", render.requirement_md(r))
 
     # ------------------------------------------------------------------- gaps
     def _has_register(self) -> bool:

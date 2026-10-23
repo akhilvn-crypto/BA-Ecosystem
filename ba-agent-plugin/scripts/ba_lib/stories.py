@@ -112,7 +112,7 @@ def add_stories(p, items: list[dict]) -> dict:
             "with_open_gaps": [s["story_id"] for s in built if s["open_gap_ids"]]}
 
 
-def _load(p, sid: str, buckets=("candidates", "deferred", "approved")) -> tuple[str, dict]:
+def _load(p, sid: str, buckets=("candidates", "unapproved", "deferred", "approved")) -> tuple[str, dict]:
     for b in buckets:
         if p.exists(f"stories/{b}/{sid}.json"):
             return b, p.read_json(f"stories/{b}/{sid}.json")
@@ -124,12 +124,14 @@ def _hist(s, action, version, note=None, **extra):
     s["updated_at"] = ist_now_iso()
 
 
-def next_story(p, story_id: str | None = None, deferred: bool = False, batch: int = 1) -> dict:
-    buckets = ("deferred",) if deferred else ("candidates",)
+def next_story(p, story_id: str | None = None, deferred: bool = False, batch: int = 1, unapproved: bool = False) -> dict:
+    buckets = ("deferred",) if deferred else ("unapproved",) if unapproved else ("candidates",)
     pool = [s for b, s in p.all_stories() if b in buckets]
     if story_id:
         _, one = _load(p, story_id, buckets + ("approved",))
         pool = [one]
+    elif unapproved and not pool:
+        return {"stories": [], "remaining": 0, "note": "No unapproved stories."}
     order = {"IN_REVIEW": 0, "CANDIDATE": 1, "CHANGES_REQUESTED": 2, "DEFERRED": 3}
     pool.sort(key=lambda s: (order.get(s["status"], 9), s["story_id"]))
     chosen = pool[:max(1, batch)]
@@ -151,7 +153,7 @@ def next_story(p, story_id: str | None = None, deferred: bool = False, batch: in
         d["requirement_statements"] = {r: live[r]["statement"] for r in s["requirement_ids"] if r in live}
         out.append(d)
     return {"stories": out, "remaining": len(pool) - len(chosen),
-            "options": ["approve", "edit", "defer"] + (["continue deferring"] if deferred else [])}
+            "options": ["approve", "suggest changes (free text)", "not approved", "defer"] + (["continue deferring"] if deferred else [])}
 
 
 def request_changes(p, sid: str, version: int, note: str) -> dict:
@@ -161,16 +163,21 @@ def request_changes(p, sid: str, version: int, note: str) -> dict:
     check_transition(STORY_TRANSITIONS, "Story", s["status"], "CHANGES_REQUESTED")
     s["status"] = "CHANGES_REQUESTED"
     _hist(s, "CHANGES_REQUESTED", version, note)
-    p.save_story("candidates", s)
+    p.save_story("unapproved", s)
+    p.remove_story_files("candidates", sid)
     p.audit("STORY_CHANGES_REQUESTED", story_id=sid, version=version, note=note)
-    return {"story_id": sid, "status": s["status"]}
+    p.save_state(f"story-{sid}-unapproved")
+    return {"story_id": sid, "status": s["status"], "location": f"stories/unapproved/{sid}.md"}
 
 
 def approve(p, sid: str, version: int, statement: str, approver_name: str | None = None, approver_role: str | None = None) -> dict:
     now = ist_now_iso()
-    bucket, s = _load(p, sid, ("candidates", "deferred"))
+    bucket, s = _load(p, sid, ("candidates", "unapproved", "deferred"))
     if bucket == "deferred":
         raise BAError("STORY_DEFERRED", f"{sid} is deferred. Revisit it first (`story revisit`) so it is reviewed again.")
+    if bucket == "unapproved":
+        raise BAError("STORY_UNAPPROVED", f"{sid} was marked not approved. Apply the requested changes with `story edit` "
+                      "(new version) and approve that version.")
     if s["version"] != version:
         raise BAError("VERSION_MISMATCH", f"Approval must name the exact version under review; {sid} is at v{s['version']}.")
     check_transition(STORY_TRANSITIONS, "Story", s["status"], "APPROVED")
@@ -228,7 +235,7 @@ def edit(p, sid: str, changes: dict, reason: str) -> dict:
         new[k] = v
     _check_content(p, new, ready, skip_dup_of=sid, tag=sid)
     versions = [base["version"]] + [s["version"] for s in p.archived_stories() if s["story_id"] == sid]
-    for b in ("candidates", "deferred", "approved"):
+    for b in ("candidates", "unapproved", "deferred", "approved"):
         if p.exists(f"stories/{b}/{sid}.json"):
             versions.append(p.read_json(f"stories/{b}/{sid}.json")["version"])
     nv = max(versions) + 1
@@ -239,10 +246,10 @@ def edit(p, sid: str, changes: dict, reason: str) -> dict:
                 "baseline_version": p.state["baseline_version"]})
     new["title"] = normalize_ws(new["title"])
     _hist(new, "EDITED", nv, reason, from_version=base["version"])
-    if bucket in ("candidates", "deferred"):
+    if bucket in ("candidates", "unapproved", "deferred"):
         p.archive_story(base)
-        if bucket == "deferred":
-            p.remove_story_files("deferred", sid)
+        if bucket != "candidates":
+            p.remove_story_files(bucket, sid)
     p.save_story("candidates", new)
     p.audit("STORY_EDITED", story_id=sid, from_version=base["version"], new_version=nv, reason=reason,
             previous_status=base["status"], requires_reapproval=True)

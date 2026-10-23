@@ -1,9 +1,9 @@
 # Artifact integrity (shared reference)
 
-**Layout** (all under the confirmed project folder): `extracted/` (outline + source metadata) · `requirements/REQ-*.json|md` · `gaps/gap-register.json` + `GAP-*.md` · `decisions/decision-log.jsonl` + `DEC-*.md` · `baselines/baseline-vN.json|md` + `baseline-manifest.json` · `stories/{candidates,approved,deferred,archive}/` · `reports/` · `state/workflow.json`, `state/audit.jsonl`, `state/pending/`, `state/backups/`, `state/inbox/`.
+**Layout** (all under the confirmed project folder): `extracted/` (outline + source metadata) · `atomic-requirements/REQ-*.json|md` · `gaps/gap-register.json` + `GAP-*.md` · `decisions/decision-log.jsonl` + `DEC-*.md` · `baselines/baseline-vN.json|md` + `baseline-manifest.json` · `stories/{candidates,approved,unapproved,deferred,archive}/` · `reports/` · `state/workflow.json`, `state/audit.jsonl`, `state/pending/`, `state/backups/`, `state/inbox/`.
 
 **Rules**
-1. The JSON records are authoritative; the `.md` files are rendered views. Never hand-edit anything under `state/`, `requirements/`, `gaps/`, `decisions/`, `baselines/` or `stories/`. Change them only through the core so schemas, transitions and audit events stay consistent.
+1. The JSON records are authoritative; the `.md` files are rendered views. Never hand-edit anything under `state/`, `atomic-requirements/`, `gaps/`, `decisions/`, `baselines/` or `stories/`. Change them only through the core so schemas, transitions and audit events stay consistent.
 2. `state/audit.jsonl` and `decisions/decision-log.jsonl` are append-only.
 3. Writes are atomic (temp file + replace); previous versions of overwritten derived files are kept in `state/backups/`. `safe_write.py` is the only way to create helper files, and only under `state/inbox/` or `reports/`.
 4. Requirements, stories and baselines are **versioned**; older versions stay in history (`versions[]`, `stories/archive/`, earlier `baseline-vN`). Nothing is deleted.
