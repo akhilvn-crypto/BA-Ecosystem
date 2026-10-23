@@ -1,0 +1,14 @@
+{
+  "name": "ba-agents",
+  "owner": {
+    "name": "BA Agent Plugin"
+  },
+  "plugins": [
+    {
+      "name": "ba-agent",
+      "source": "./ba-agent-plugin",
+      "description": "Interactive Business Analyst: BRD to traceable requirements, owner-attributed gap resolution with IST audit trail, versioned baseline, and human-approved user stories."
+    }
+  ],
+  "description": "Local marketplace for the Interactive Business Analyst plugin (ba-agent)."
+}
