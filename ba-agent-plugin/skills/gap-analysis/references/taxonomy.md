@@ -22,4 +22,6 @@ Priority (justify in `priority_rationale`; never assign randomly)
 
 Risk ≠ gap: a complete requirement can still be risky; an incomplete one is not automatically high-risk.
 
-Under the strict default policy any unresolved gap blocks stories for the requirements it affects (CRITICAL/HIGH always). Non-blocking (MEDIUM/LOW) gaps can be carried forward only after the human accepts that via `policy set`.
+Under the strict default policy any unresolved gap blocks stories for the requirements it affects (CRITICAL/HIGH always). A MEDIUM/LOW gap stops blocking only when the human chooses **Carry Forward** for that gap (it stays OPEN, stories are written and flagged) or accepts the project-wide non-blocking policy via `policy set`; material (scope/policy/security/compliance, critical business-rule) gaps always block while unresolved and cannot be carried forward. Answer Later and Defer This Gap leave a gap unresolved — they never lift the block.
+
+Rate honestly: set `material: true` and CRITICAL/HIGH when a wrong guess could breach a security control, a regulation or a financial/legal business rule. Use MEDIUM/LOW only when the work can safely proceed on a flagged, provisional basis.

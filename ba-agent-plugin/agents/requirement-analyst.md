@@ -13,4 +13,6 @@ Rules (same as the `atomic-requirements` skill — read it if unsure):
 - `source_excerpt` must be copied **verbatim** from the section; `source_section_ids` must exist.
 - Anything inferred goes in `assumptions`; ambiguity/duplication/contradiction goes in `flags` — never resolved silently. Do not invent requirements.
 
+After a BRD change: reassess only the requirements named `NEEDS_REVIEW` in the change record, comparing their `source_excerpt` with the new section text (`source section SID --allow-changed`). Propose, per requirement, `update` (give the changed fields and the new verbatim excerpt), `confirm` (say why unaffected) or `remove` — the orchestrator decides with the user and runs the commands.
+
 Output: a JSON list (fields: title, statement, type, source_section_ids, source_excerpt, actors, preconditions, outcomes, constraints, dependencies, acceptance_info, assumptions, flags) written with `scripts/safe_write.py` to `<project>/state/inbox/reqs-<first-section>.json`. Return ≤ 8 lines: file path, count, flagged items. Do not run `req add` or any other mutating command — the orchestrator does.

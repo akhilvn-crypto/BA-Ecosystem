@@ -38,7 +38,22 @@
     "closure_validation": {"type": ["object", "null"]},
     "answers": {"type": "array", "items": {"type": "object", "required": ["answer_id", "response", "received_at_ist"]}},
     "conflicts": {"type": "array", "items": {"type": "object"}},
-    "deferral": {"type": ["object", "null"]},
+    "suggested_answer": {"type": ["object", "null"], "properties": {
+      "answer": {"type": "string", "minLength": 1}, "source": {"type": "string", "minLength": 1}}},
+    "deferral": {"type": ["object", "null"], "properties": {
+      "at_ist": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\+05:30$"},
+      "timezone": {"type": "string"}, "reason": {"type": ["string", "null"]},
+      "owner": {"type": ["string", "null"]}, "revisit_by": {"type": ["string", "null"], "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
+      "by_name": {"type": ["string", "null"]}, "by_role": {"type": ["string", "null"]},
+      "decision_owner_name": {"type": ["string", "null"]}, "decision_owner_role": {"type": ["string", "null"]}}},
+    "carry_forward": {"type": ["object", "null"], "properties": {
+      "at_ist": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\+05:30$"},
+      "timezone": {"type": "string"}, "reason": {"type": ["string", "null"]},
+      "by_name": {"type": "string", "minLength": 2}, "by_role": {"type": "string", "minLength": 2},
+      "decision_owner_name": {"type": ["string", "null"]}, "decision_owner_role": {"type": ["string", "null"]},
+      "priority": {"enum": ["MEDIUM", "LOW"]}, "affected_requirement_ids": {"type": "array", "items": {"type": "string"}}}},
+    "carry_forward_history": {"type": "array", "items": {"type": "object"}},
+    "deferral_history": {"type": "array", "items": {"type": "object"}},
     "skipped_count": {"type": "integer", "minimum": 0},
     "needs_impact_review": {"type": "boolean"},
     "history": {"type": "array", "items": {"type": "object"}},

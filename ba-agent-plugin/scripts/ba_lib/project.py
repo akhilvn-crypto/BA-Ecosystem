@@ -8,7 +8,7 @@ import shutil
 import uuid
 from pathlib import Path
 
-from . import ingest, render, schema
+from . import ingest, render, schema, snapshots
 from .util import (BAError, append_jsonl, atomic_write_text, ist_now_iso, is_within, read_json, read_jsonl,
                    safe_join)
 
@@ -49,7 +49,7 @@ GAP_TRANSITIONS = {
 STORY_TRANSITIONS = {
     "CANDIDATE": {"IN_REVIEW", "APPROVED", "DEFERRED", "CHANGES_REQUESTED", "SUPERSEDED", "BLOCKED"},
     "IN_REVIEW": {"APPROVED", "DEFERRED", "CHANGES_REQUESTED", "CANDIDATE", "SUPERSEDED", "BLOCKED"},
-    "CHANGES_REQUESTED": {"SUPERSEDED", "CANDIDATE"},
+    "CHANGES_REQUESTED": {"SUPERSEDED", "CANDIDATE", "DEFERRED"},
     "APPROVED": {"SUPERSEDED"},
     "DEFERRED": {"CANDIDATE", "SUPERSEDED"},
     "BLOCKED": {"CANDIDATE", "SUPERSEDED"},
@@ -60,7 +60,8 @@ REQ_DIR = "atomic-requirements"  # one folder the user can open; older projects 
 LEGACY_REQ_DIR = "requirements"
 
 DIRS = ["state", "state/backups", "state/pending", "extracted", REQ_DIR, "gaps", "decisions", "baselines",
-        "stories/candidates", "stories/approved", "stories/unapproved", "stories/deferred", "stories/archive", "reports"]
+        "stories/candidates", "stories/approved", "stories/unapproved", "stories/deferred", "stories/archive", "reports",
+        "changes", "snapshots/brd", "snapshots/stories"]
 UNRESOLVED_OK_STORY_BUCKETS = ("candidates", "approved", "unapproved", "deferred")
 
 
@@ -115,11 +116,11 @@ class Project:
             "stage": "INITIALIZED", "resume_stage": None,
             "source": {"path": str(source_path), "relative_path": rel, "original_path": str(brd),
                        "fingerprint": meta["fingerprint"], "text_fingerprint": meta["text_fingerprint"],
-                       "format": meta["format"]},
+                       "material_fingerprint": meta["material_fingerprint"], "format": meta["format"]},
             "baseline_version": None, "decision_owner": None, "decision_owner_unknown": None,
             "decision_owner_history": [], "gap_analysis_complete": False,
             "policy": {"blocking_priorities": ["CRITICAL", "HIGH"], "accept_nonblocking_carry_forward": False,
-                       "accepted_by": None},
+                       "deferral_revisit_required_priorities": [], "accepted_by": None},
             "impact_review": {"pending": False, "reasons": []},
             "pending_gap_ids": [], "pending_story_ids": [], "last_completed_action": "project-initialized",
             "created_at": now, "updated_at": now,
@@ -127,6 +128,7 @@ class Project:
         p._state = state
         p.save_state("project-initialized")
         p.write_source_metadata(meta)
+        snapshots.record(p, meta, "initial BRD")
         p.audit("WORKFLOW_STARTED", source_format=meta["format"], source_fingerprint=meta["fingerprint"],
                 parser=meta["parser"], copied_source=bool(copy_source and rel and rel.startswith("source/")))
         p.set_stage("BRD_PARSED", "brd-parsed")
@@ -368,11 +370,26 @@ class Project:
 
     # ----------------------------------------------------------------- stories
     def all_stories(self) -> list[tuple[str, dict]]:
+        """Every readable story. An unreadable file is skipped here (it must not take status/validate down with it);
+        `unreadable_story_files` lists it so `validate` and change detection can report it."""
         out = []
         for b in UNRESOLVED_OK_STORY_BUCKETS:
             for f in sorted(self.path(f"stories/{b}").glob("US-*.json")):
-                out.append((b, read_json(f)))
+                try:
+                    out.append((b, read_json(f)))
+                except (ValueError, OSError):
+                    continue
         return out
+
+    def unreadable_story_files(self) -> list[str]:
+        bad = []
+        for b in UNRESOLVED_OK_STORY_BUCKETS:
+            for f in sorted(self.path(f"stories/{b}").glob("US-*.json")):
+                try:
+                    read_json(f)
+                except (ValueError, OSError):
+                    bad.append(f"stories/{b}/{f.name}")
+        return bad
 
     def archived_stories(self) -> list[dict]:
         return [read_json(f) for f in sorted(self.path("stories/archive").glob("US-*.json"))]
@@ -415,20 +432,21 @@ class Project:
             self.audit("BASELINE_MARKED_STALE", reason=reason)
 
     # ------------------------------------------------------------------ impact
-    def flag_stories(self, req_ids: set[str], reason: str, cause: str) -> list[str]:
-        """Flag every non-archived story that links to any of req_ids for impact review."""
+    def flag_stories(self, req_ids: set[str], reason: str, cause: str, gap_id: str | None = None,
+                     change_id: str | None = None) -> list[str]:
+        """Flag every non-archived story that links to any of req_ids (or lists `gap_id` as an open gap) for impact review."""
         flagged = []
         for bucket, s in self.all_stories():
-            if set(s["requirement_ids"]) & req_ids:
+            if set(s["requirement_ids"]) & req_ids or (gap_id and gap_id in s.get("open_gap_ids", [])):
                 cur = s.get("impact_review") or {}
                 if cur.get("pending") and cur.get("reason") == reason:
                     continue  # idempotent on replay
-                s["impact_review"] = {"pending": True, "reason": reason, "cause": cause, "at_ist": ist_now_iso()}
+                s["impact_review"] = {"pending": True, "reason": reason, "cause": cause, "at_ist": ist_now_iso(), "change_id": change_id}
                 s["review_history"].append({"action": "IMPACT_FLAGGED", "version": s["version"],
-                                            "at_ist": ist_now_iso(), "note": reason})
+                                            "at_ist": ist_now_iso(), "note": reason, "change_id": change_id})
                 s["updated_at"] = ist_now_iso()
                 self.save_story(bucket, s)
                 self.audit("STORY_IMPACT_FLAGGED", story_id=s["story_id"], version=s["version"], bucket=bucket,
-                           requirement_ids=sorted(set(s["requirement_ids"]) & req_ids), cause=cause)
+                           requirement_ids=sorted(set(s["requirement_ids"]) & req_ids), cause=cause, gap_id=gap_id, change_id=change_id)
                 flagged.append(s["story_id"])
         return flagged

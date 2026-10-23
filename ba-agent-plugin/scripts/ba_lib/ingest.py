@@ -10,7 +10,7 @@ import zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from .util import BAError, normalize_ws, sha256_file, sha256_text
+from .util import BAError, canonical_json, normalize_ws, sha256_file, sha256_text
 
 PARSER_VERSION = "ba-ingest/1.0"
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
@@ -166,11 +166,34 @@ def extract(path: Path) -> dict:
         "text": text,
         "fingerprint": sha256_file(path),
         "text_fingerprint": sha256_text(text),
+        "material_fingerprint": material_fingerprint(sections),
         "sections": sections,
         "injection_suspects": suspects,
         "warnings": warnings,
         "parser": PARSER_VERSION,
     }
+
+
+_QUOTES = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"', "–": "-", "—": "-", " ": " "})
+
+
+def material_normalize(text: str) -> str:
+    """Reduce text to what carries meaning, so formatting-only edits compare equal: markdown emphasis, heading, list and
+    table markers, line wrapping, runs of spaces and typographic quotes are ignored. Words, numbers, punctuation inside a
+    sentence and letter case are kept - changing any of them is a material change."""
+    t = text.translate(_QUOTES)
+    t = re.sub(r"(?m)^\s*\|?[\s:|-]*-{3,}[\s:|-]*\|?\s*$", " ", t)           # table separator rows
+    t = re.sub(r"(?m)^\s{0,3}#{1,6}\s+", "", t)                                 # heading markers
+    t = re.sub(r"(?m)^\s*(?:[-*+]|\d+[.)])\s+", "", t)                          # list bullets / numbers
+    t = re.sub(r"(?m)^\s*>\s?", "", t)                                          # block quotes
+    t = re.sub(r"[*`|]", " ", t)                                                # emphasis, code, table pipes
+    t = re.sub(r"(?<!\w)_|_(?!\w)", " ", t)                                     # _emphasis_ but not snake_case
+    return normalize_ws(t)
+
+
+def material_fingerprint(sections: list[dict]) -> str:
+    """Hash of the document's structure and meaning (section levels, title paths and normalised bodies)."""
+    return sha256_text(canonical_json([[s["level"], s["key"], s.get("material_hash")] for s in sections]))
 
 
 _NUM_HEAD = re.compile(r"^(\d+(?:\.\d+){0,5})[.)]?\s+([A-Za-z][^\n]{0,90})$")
@@ -203,7 +226,7 @@ def parse_sections(text: str, fmt: str) -> list[dict]:
         sections.append({
             "section_id": sid, "title": title, "level": level, "key": key,
             "line_start": start + 1, "line_end": max(end, start + 1),
-            "hash": sha256_text(body), "has_table": any(l.strip().startswith("|") for l in lines[start:end]),
+            "hash": sha256_text(body), "material_hash": sha256_text(material_normalize(body)), "has_table": any(l.strip().startswith("|") for l in lines[start:end]),
         })
 
     first = heads[0][0] if heads else len(lines)
@@ -257,13 +280,21 @@ def excerpt_in_text(excerpt: str, text: str) -> bool:
 
 
 def diff_sections(old: list[dict], new: list[dict]) -> dict:
-    """Section-level diff by key (title path), not by positional id."""
+    """Section-level diff by key (title path), not by positional id. `changed` = the meaning differs; `formatting_only` =
+    the raw text differs but the normalised text is identical (a section with no recorded material hash is treated as changed)."""
     o = {s["key"]: s for s in old}
     n = {s["key"]: s for s in new}
+
+    def same_meaning(k):
+        a, b = o[k].get("material_hash"), n[k].get("material_hash")
+        return bool(a) and a == b
+
+    both = [k for k in n if k in o and n[k]["hash"] != o[k]["hash"]]
     return {
         "added": sorted(k for k in n if k not in o),
         "removed": sorted(k for k in o if k not in n),
-        "changed": sorted(k for k in n if k in o and n[k]["hash"] != o[k]["hash"]),
+        "changed": sorted(k for k in both if not same_meaning(k)),
+        "formatting_only": sorted(k for k in both if same_meaning(k)),
         "unchanged": sorted(k for k in n if k in o and n[k]["hash"] == o[k]["hash"]),
     }
 

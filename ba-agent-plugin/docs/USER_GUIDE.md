@@ -12,10 +12,13 @@ Claude greets you, proposes an output folder (default: the folder that contains 
 ## 2. What you will be asked
 
 1. **Decision owner** — "Who will make/confirm the business decisions for these gaps? Name and role." (Before the first gap is shown.) If you do not know yet you can pause, or continue with analysis only.
-2. **Gaps** — one at a time, each with evidence, why it matters, and one question in a prompt with a text box. Type your answer in your own words, or choose: ask for a rewording, **defer**, or **skip for now**.
+2. **Gaps** — one at a time, each with evidence, why it matters, and one question in a prompt with a text box. Highest priority first; each prompt shows the gap's priority. In the **Other** box type your answer in your own words (or an instruction such as "explain" or "carry it forward"). The other choices depend on the gap:
+   - **Medium and Low gaps** (not security/compliance): **Suggested Answer** (shown only when the BRD, a requirement or an earlier decision supports one — it counts only if you pick it, and it is checked like any other answer), **Explain This Question** (what is missing, why it matters and what it changes in the requirement, with a real-world example) and **Carry Forward**. Carry Forward keeps the gap **open** (never resolved), records who chose it, and lets story generation continue: every story that depends on the gap names it, describes what may change depending on the answer, and is marked *needs clarification* or *not ready for development*. You can revisit it any time.
+   - **Critical and High gaps, and any security/compliance-sensitive gap**: **Explain This Question**, **Answer Later** (no reason needed; the gap stays open and is asked again — the stories it blocks stay blocked) or **Defer This Gap** (you give a reason, your name and role, and a revisit date if you have one; the gap is marked DEFERRED and still blocks stories). These gaps cannot be carried forward.
+   Your answer is checked against the BRD, related requirements, approved decisions and business rules; if it conflicts you are asked to clarify before the gap can be resolved.
 3. **Closing a gap** — Claude summarises the meaning it will record and asks you to confirm and to state your name and role as the person closing it. If the answer contradicts the BRD or an earlier decision you are asked to clarify, explicitly confirm a change (named authoriser), or defer.
 4. **Baseline** — you confirm the consolidated requirements baseline.
-5. **Stories** — one at a time, each in a prompt with a text box. Type **approve**, type your **suggestions**, or type **not approved** (or pick **defer**). Claude records your own words. Suggestions create a new story version that is shown again and needs approval again; a story you did not approve never reaches `stories/approved/`.
+5. **Stories** — one at a time, each in a prompt with a text box. A story that depends on an open (carried-forward) gap shows the gap, the unresolved question, its potential impact and its readiness; working assumptions are labelled *not approved*. When you later answer a carried-forward gap (ask Claude to revisit it, or `/ba-agent:review`), the baseline is refreshed, the stories that named the gap are updated with the decision and shown to you again for approval (a changed story is a new version; the version you approved stays in force until you approve the new one). Type **approve**, type your **suggestions**, or type **not approved** (or pick **defer**). Claude records your own words. Suggestions create a new story version that is shown again and needs approval again; a story you did not approve never reaches `stories/approved/`.
 
 ## 3. Where things are saved
 
@@ -27,6 +30,8 @@ Claude greets you, proposes an output folder (default: the folder that contains 
   decisions/    decision-log.jsonl, DEC-001.md …
   baselines/    baseline-v1.json|md, baseline-manifest.json
   stories/      candidates/  approved/  unapproved/  deferred/  archive/
+  changes/      change-register.json, CHG-001.md|json …   (what changed, impact, actions, progress)
+  snapshots/    brd/ (accepted BRD text per version)  stories/ (every approved story version + hashes)
   reports/      workflow-summary.md, traceability-report.md
   state/        workflow.json, audit.jsonl (IST), pending/, backups/, inbox/
 ```
@@ -35,12 +40,23 @@ Claude greets you, proposes an output folder (default: the folder that contains 
 ## 4. Resume, status, review
 
 - `/ba-agent:status [folder]` — stage, counts, blockers, validation, and the next step.
-- `/ba-agent:review [folder]` — continue answering gaps, reviewing stories, revisiting deferred items.
+- `/ba-agent:review [folder]` — carry on where you left off: it looks at the status and continues with the next gaps or stories (or a stale baseline / impact review).
+- `/ba-agent:triage-gaps [folder]` — see **all** unresolved gaps in one list (OPEN and DEFERRED: priority, deferral reason, decision owner, linked requirements and stories, whether they block stories), then go through them one by one. For each gap you can type an answer (it is checked against the BRD, the requirements and earlier decisions before the gap can be closed), ask for an explanation, defer it (reason, your name and role, optional revisit date), carry it forward (MEDIUM/LOW only), or keep it as it is. A deferred gap stays deferred, and visible, until you choose to answer it.
+- `/ba-agent:changes [folder]` — check the BRD and your approved stories for changes, see the impact first, then decide (section 5).
+- `/ba-agent:triage-stories [folder]` — see **all** stories that are not approved yet (pending review, not approved, deferred) in one list, with their readiness, open gaps and whether anything stops you approving them now, then go through them one by one: **approve**, **edit** (type your suggestions: this makes a new version that comes back for your approval), **defer** or mark **not approved**. Deferred stories are kept in `stories/deferred/` and listed again next time.
+- Triage never decides for you: nothing is approved, resolved or deferred without your explicit words, and stopping half-way loses nothing — run the command again and the remaining items are listed.
 - Closing the session loses nothing. Re-run `/ba-agent:start <project folder>`. State is shared between sessions/devices only if they can all open the same folder.
 
-## 5. If the BRD changes
+## 5. Changes: the BRD, or a story you already approved
 
-Run `/ba-agent:start <project folder>` (or ask for a source check). Claude compares section by section, marks only affected requirements for review, flags related stories/baseline, and asks you to accept the reassessed change. Earlier decisions and versions stay on record.
+Every time you resume (`/ba-agent:start <project folder>`, `/ba-agent:review`) and before the gap and story lists are shown, Claude runs a **change check**. You can also run it any time with `/ba-agent:changes`.
+
+- **What it compares:** the BRD against the copy of its text stored when you last accepted it (`snapshots/brd/`), and every approved story against exactly what was approved (`snapshots/stories/`).
+- **What you are told first (nothing is changed yet):** what was added, modified or deleted (old and new wording side by side), when it was detected, which requirements, open gaps, confirmed decisions, stories (approved ones named) and baseline it touches, and what you need to do. The same is saved as `changes/CHG-001.md`.
+- **Formatting-only edits** (bold, bullets, spacing, re-wrapped lines in the BRD; whitespace in a story) are accepted automatically and logged — you are not asked to review them. A changed word, number or rule is always treated as a real change.
+- **You decide:** *Apply impact* (Claude asks for your name and role and your own words) or *Review later* (nothing changes; it is raised again next time). Applying marks the affected requirements, gaps, stories and the baseline as needing review — it approves nothing and removes no approval. Confirmed decisions are listed for you to re-validate, not cancelled.
+- **If you edited an approved story by hand** (the `.json` or the readable `.md`): applying the change puts back exactly what was approved, keeps your edit word for word (`snapshots/stories/…observed-CHG-001…`) and brings it back as the next version for you to approve, change or discard (`story revert-edit`). If you deleted an approved story, its approved record is kept and you choose to restore it or confirm the removal.
+- **Until it is reconciled:** `status` shows `Changes: …`, affected items show as stale / under review, the core refuses to write new gap, baseline or story artifacts on top of an unreviewed change, and the workflow cannot be completed. Every step is in the audit log (IST) and `story history US-001` lists each approved version with who approved it and in which words.
 
 ## 6. Closure audit (what is recorded for every resolved gap)
 
@@ -69,5 +85,7 @@ Claude Code asks before running the core script. If you trust this plugin you ca
 | `CONFLICT_REVIEW_REQUIRED` | The answer resembles an existing requirement/decision; review it. |
 | `CLOSURE_IN_PROGRESS` / validation says "run recover" | A previous run was interrupted; run `recover`. |
 | `IMPACT_REVIEW_PENDING` | The BRD (or a decision) changed; finish the impact review. |
+| `CHANGES_UNREVIEWED` | A change was detected that you have not seen yet. Claude shows it; apply it or choose *Review later*, then continue. |
+| `CHANGE_RECORD_STALE` | The BRD or story changed again after the impact was shown; run the change check again. |
 | `UNSUPPORTED_FORMAT` | Export the BRD to `.docx`, `.md` or `.txt`. |
 | `python` not found | Install Python 3.9+ (the plugin installs nothing itself). |

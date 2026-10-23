@@ -27,7 +27,7 @@ class ValidatorTests(unittest.TestCase):
         self.assertTrue(errs)
 
     def test_all_schema_files_load(self):
-        for n in ("requirement", "gap", "decision", "story", "workflow_state"):
+        for n in ("requirement", "gap", "decision", "story", "workflow_state", "change"):
             self.assertIn("required", schema.load_schema(n))
 
 

@@ -7,7 +7,8 @@
 **Decision IDs:** $decision_ids  
 **Dependencies:** $dependencies  
 **Assumptions:** $assumptions  
-**Open gaps:** $open_gap_ids
+**Open gaps:** $open_gap_ids  
+**Readiness:** $readiness
 $approval
 
 ### User Story
@@ -17,6 +18,9 @@ so that $value.
 
 ### Acceptance Criteria
 $acceptance_criteria
+
+### Unresolved decisions
+$unresolved_decisions
 
 ### Notes
 - Business rules: $business_rules

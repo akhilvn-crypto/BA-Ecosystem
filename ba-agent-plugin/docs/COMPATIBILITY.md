@@ -23,8 +23,8 @@
 | Capability | Claude Code CLI | Claude Cowork | Status / action |
 |---|---|---|---|
 | Plugin manifest | **Verified**: `claude plugin validate` passes (also `--strict`); plugin loads via `--plugin-dir` (name `ba-agent`) | Format per docs; **not tested** (no Cowork access here) | Zip built by `scripts/package_plugin.py`; upload route documented |
-| Skills | **Verified**: all 10 listed by a live session | Documented to load; **not tested** | Skills are surface-neutral |
-| Slash commands | **Verified**: `/ba-agent:start`, `:status`, `:review` registered and invoked in a live headless session | Documented `/plugin:command`; **not tested** | — |
+| Skills | **Verified**: the 10 skills that existed at 1.4.0 were listed by a live session; `change-detection` (11th, 1.5.0) is validated by `claude plugin validate` but **not yet seen in a live session** | Documented to load; **not tested** | Skills are surface-neutral |
+| Slash commands | **Verified**: `/ba-agent:start`, `:status`, `:review` registered and invoked in a live headless session (`:triage-gaps` and `:triage-stories` added in 1.4.0 — files validated, core commands tested; **not yet invoked in a live session**) | Documented `/plugin:command`; **not tested** | — |
 | Subagents | Load (validated); optional — workflow does not depend on them | Documented to load; not tested | Treated as optimisation only |
 | Hooks | None shipped | None shipped | Correctness never depends on hooks |
 | Local folder access | Verified (reads BRD, writes project folder) | **Unverified** | `start` asks the model to check access and offer CLI/desktop-folder fallback instead of pretending |
@@ -34,5 +34,8 @@
 
 ## Surface-specific notes
 
+- Gap and story dialogs use `AskUserQuestion` where it exists (Claude Code). Where it is unavailable (for example Cowork) the skills fall back to the same choices as a short numbered list in chat — for Medium/Low gaps Suggested Answer / Other / Explain This Question / Carry Forward, for Critical/High/material gaps Other / Explain This Question / Answer Later / Defer This Gap. The core commands, the recorded data and the blocking rules are identical on both surfaces; only the presentation differs. The Cowork path is **not verified** here.
+
 - Claude Code on Windows may expose both a Bash and a PowerShell tool; the plugin's commands are plain `python …` and work in either. Headless (`-p`) runs need `--allowedTools` to include the shell tool actually used (observed: PowerShell on this machine).
+- **Change detection (1.5.0)** is part of the core script plus the `change-detection` skill and `/ba-agent:changes`, so it needs nothing the rest of the plugin does not already need. It deliberately does **not** rely on hooks (none are shipped): the checks run inside the core before guarded commands and are called explicitly by `/ba-agent:start`, `/ba-agent:review` and `/ba-agent:changes`, which is the same in Claude Code and Cowork. Snapshots and change records are ordinary files in the project folder. Verified: the core behaviour (automated tests, real CLI subprocess). Not verified: a live Claude session invoking `/ba-agent:changes`, and anything in Cowork.
 - Not tested at all: macOS/Linux, Python < 3.14, claude.ai chat (no local file access), Cowork.

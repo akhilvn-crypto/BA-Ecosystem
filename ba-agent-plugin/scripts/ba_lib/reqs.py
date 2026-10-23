@@ -5,7 +5,7 @@ import os
 import re
 from pathlib import Path
 
-from . import conflicts, ingest, schema
+from . import conflicts, ingest, schema, snapshots
 from .project import REQ_DIR
 from .util import BAError, ist_now_iso, normalize_ws, require_identity
 
@@ -124,9 +124,9 @@ def add_requirements(p, items: list[dict]) -> dict:
     return {"created": [r["requirement_id"] for r in built], "advisory": notes}
 
 
-def _after_requirement_change(p, rids: set[str], reason: str, cause: str) -> dict:
+def _after_requirement_change(p, rids: set[str], reason: str, cause: str, change_id: str | None = None) -> dict:
     """Propagate a requirement change: stories → impact review, gaps flagged, baseline stale, analysis reopened."""
-    flagged_stories = p.flag_stories(rids, reason, cause) if p.all_stories() else []
+    flagged_stories = p.flag_stories(rids, reason, cause, change_id=change_id) if p.all_stories() else []
     flagged_gaps = []
     gaps = p.gaps()
     for g in gaps:
@@ -277,7 +277,20 @@ def source_section(p, section_id: str, allow_changed: bool = False) -> dict:
             "text": ingest.section_text(meta["text"], s)}
 
 
-def source_check(p) -> dict:
+def source_check(p, change_id: str | None = None) -> dict:
+    """Library entry point kept for direct callers: detect, record and apply a BRD change in ONE step.
+
+    The command line never does this: `source check` / `changes check` only detects and explains, and `changes apply`
+    (after the user has seen the impact) calls `_apply_source_change` with the change record's id."""
+    if change_id is None:
+        from . import changes
+        return changes.check_and_apply_source(p)
+    return _apply_source_change(p, change_id)
+
+
+def _apply_source_change(p, change_id: str | None = None) -> dict:
+    """Mark everything the BRD change touches: requirements NEEDS_REVIEW, gaps and stories flagged, baseline stale,
+    workflow reopened. Only sections whose MEANING changed count; layout-only differences never reach this point."""
     src = p.state["source"]
     path = Path(src["path"])
     if not path.exists():
@@ -285,15 +298,8 @@ def source_check(p) -> dict:
     meta = ingest.extract(path)
     if meta["fingerprint"] == src["fingerprint"]:
         return {"changed": False, "fingerprint": src["fingerprint"]}
-    old = p.source_metadata()
-    if meta["text_fingerprint"] == old["text_fingerprint"]:
-        p.audit("SOURCE_FINGERPRINT_CHANGED", previous=src["fingerprint"], new=meta["fingerprint"], content_changed=False)
-        src["fingerprint"] = meta["fingerprint"]
-        p.write_source_metadata(meta)
-        p.save_state("source-fingerprint-refreshed")
-        return {"changed": False, "cosmetic_change": True,
-                "note": "File bytes changed but extracted text is identical; fingerprint refreshed, no impact."}
-    diff = ingest.diff_sections(old["sections"], meta["sections"])
+    old_sections = snapshots.accepted(p)["sections"]
+    diff = ingest.diff_sections(old_sections, meta["sections"])
     touched_keys = set(diff["changed"]) | set(diff["removed"])
     affected, intact = [], {}
     new_secs = {s["key"]: s for s in meta["sections"]}
@@ -309,14 +315,15 @@ def source_check(p) -> dict:
             p.save_requirement(r)
             affected.append(r["requirement_id"])
     p.write_json("state/pending/source-change.json", {"sections": meta["sections"], "fingerprint": meta["fingerprint"],
-                 "text_fingerprint": meta["text_fingerprint"], "format": meta["format"], "parser": meta["parser"],
-                 "injection_suspects": meta["injection_suspects"], "warnings": meta["warnings"]})
+                 "text_fingerprint": meta["text_fingerprint"], "material_fingerprint": meta["material_fingerprint"],
+                 "format": meta["format"], "parser": meta["parser"], "injection_suspects": meta["injection_suspects"],
+                 "warnings": meta["warnings"], "change_id": change_id})
     p.state["impact_review"] = {"pending": True, "detected_at_ist": ist_now_iso(), "previous_fingerprint": src["fingerprint"],
                                 "new_fingerprint": meta["fingerprint"], "diff": diff, "affected_requirement_ids": affected,
-                                "added_section_keys": diff["added"]}
+                                "added_section_keys": diff["added"], "change_id": change_id}
     p.audit("SOURCE_CHANGED", previous=src["fingerprint"], new=meta["fingerprint"], diff={k: len(v) for k, v in diff.items()},
-            affected_requirement_ids=affected)
-    impact = _after_requirement_change(p, set(affected), "BRD content changed", "source-change") if affected else {}
+            affected_requirement_ids=affected, change_id=change_id)
+    impact = _after_requirement_change(p, set(affected), "BRD content changed", "source-change", change_id) if affected else {}
     if not affected:
         p.mark_baseline_stale("BRD changed (only new sections)")
         p.state["gap_analysis_complete"] = False
@@ -338,6 +345,18 @@ def source_accept(p, by_name: str, by_role: str, statement: str) -> dict:
     if open_reqs:
         raise BAError("IMPACT_REVIEW_INCOMPLETE", f"Requirements still need review: {open_reqs}", requirement_ids=open_reqs)
     new = p.read_json("state/pending/source-change.json")
+    path = Path(p.state["source"]["path"])
+    now_meta = ingest.extract(path) if path.exists() else None
+    if now_meta is None or now_meta["fingerprint"] not in (new["fingerprint"], p.state["source"]["fingerprint"]):
+        raise BAError("SOURCE_CHANGED_AGAIN", "The BRD changed again after the impact was assessed (or is missing). Run `changes check` "
+                      "and show the user the new impact before accepting anything.")
+    if now_meta["fingerprint"] == p.state["source"]["fingerprint"]:  # the BRD went back to the accepted content: nothing to accept
+        p.state["impact_review"] = {"pending": False, "reasons": [], "last_accepted_at_ist": ist_now_iso()}
+        p.path("state/pending/source-change.json").unlink()
+        p.audit("SOURCE_CHANGE_WITHDRAWN", by_name=by_name, by_role=by_role, statement=statement,
+                note="the BRD matches the accepted version again; the fingerprint is unchanged")
+        p.save_state("source-change-withdrawn")
+        return {"accepted": False, "withdrawn": True, "fingerprint": p.state["source"]["fingerprint"]}
     by_key = {s["key"]: s["section_id"] for s in new["sections"]}
     for r in p.requirements():
         if r["status"] != "ACTIVE":
@@ -355,11 +374,14 @@ def source_accept(p, by_name: str, by_role: str, statement: str) -> dict:
             r["source_fingerprint"] = new["fingerprint"]
             p.save_requirement(r)
     p.state["source"]["fingerprint"], p.state["source"]["text_fingerprint"] = new["fingerprint"], new["text_fingerprint"]
+    p.state["source"]["material_fingerprint"] = new.get("material_fingerprint")
     p.write_source_metadata({**new, "format": new["format"]})
+    snapshots.record(p, now_meta, "BRD change accepted after impact review", new.get("change_id"))
     p.state["impact_review"] = {"pending": False, "reasons": [], "last_accepted_at_ist": ist_now_iso()}
     pend = p.path("state/pending/source-change.json")
     pend.unlink()
-    p.audit("SOURCE_CHANGE_ACCEPTED", by_name=by_name, by_role=by_role, statement=statement, new_fingerprint=new["fingerprint"])
+    p.audit("SOURCE_CHANGE_ACCEPTED", by_name=by_name, by_role=by_role, statement=statement, new_fingerprint=new["fingerprint"],
+            change_id=new.get("change_id"))
     p.save_state("source-change-accepted")
     return {"accepted": True, "fingerprint": new["fingerprint"],
             "next": "Add requirements for new sections, re-run gap analysis (`gaps commit`), then create a new baseline. "

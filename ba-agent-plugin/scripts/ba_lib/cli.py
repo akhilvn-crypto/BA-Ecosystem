@@ -13,11 +13,19 @@ import sys
 import traceback
 from pathlib import Path
 
-from . import baseline as basemod, checks, gaps as gapmod, ingest, reqs as reqmod, stories as storymod
+from . import baseline as basemod, changes as changemod, checks, gaps as gapmod, ingest, reqs as reqmod, snapshots, stories as storymod
 from .project import Project
 from .util import BAError, human_ist, sha256_file
 
 TRUE = {"1", "true", "yes", "y", "on"}
+
+# Commands that write downstream artifacts (or present them to the user): a change check runs first and they refuse to
+# continue while a detected change has not been shown to the user and applied. `changes`, `source accept`, `req confirm`,
+# `req remove`, `story confirm-unaffected`, `story restore|revert-edit`, `recover`, `validate`, `status` are never blocked.
+GUARDED = {("req", "add"), ("req", "commit"), ("gaps", "add"), ("gaps", "commit"), ("gaps", "next"), ("gap", "resolve"),
+           ("baseline", "create"), ("baseline", "confirm"), ("story", "add"), ("story", "next"), ("story", "approve"), ("story", "edit")}
+# Read-only listings: the check still runs (and is recorded) first, and its result is attached to the output.
+CHECKED = {("gaps", "triage"), ("story", "triage"), ("complete", None), ("report", None)}
 
 
 def _csv(v):
@@ -70,9 +78,14 @@ def build_parser() -> argparse.ArgumentParser:
     i = sub.add_parser("init")
     i.add_argument("--brd", required=True); i.add_argument("--name"); i.add_argument("--copy-source", action="store_true")
 
-    grp("source", {"check": [], "accept": [opt("--by-name"), opt("--by-role"), opt("--statement")],
+    grp("source", {"check": [opt("--no-record", action="store_true")],
+                   "accept": [opt("--by-name"), opt("--by-role"), opt("--statement")],
                    "section": [pos("section_id"), opt("--allow-changed", action="store_true")],
-                   "outline": []})
+                   "outline": [], "history": []})
+    grp("changes", {"check": [opt("--no-record", action="store_true")],
+                    "apply": [opt("--id"), opt("--by-name"), opt("--by-role"), opt("--statement")],
+                    "list": [opt("--status")], "show": [pos("id")], "status": [],
+                    "dismiss": [pos("id"), opt("--item"), opt("--reason"), opt("--by-name"), opt("--by-role")]})
     grp("req", {"add": [opt("--file")], "commit": [], "pairs": [], "list": [opt("--status")], "show": [pos("id")],
                 "update": [pos("id"), opt("--file"), opt("--reason"), opt("--reason-file"), opt("--cause", default="decision"),
                           opt("--decision-id"), opt("--by-name"), opt("--by-role")],
@@ -81,29 +94,38 @@ def build_parser() -> argparse.ArgumentParser:
     grp("owner", {"set": [opt("--name"), opt("--role"), opt("--gap"), opt("--statement")],
                   "unknown": [opt("--choice", default="pause")], "show": []})
     grp("gaps", {"add": [opt("--file")], "commit": [opt("--cross-pass-done", action="store_true")],
-                 "next": [opt("--limit", type=int, default=1)], "list": [opt("--status")]})
+                 "next": [opt("--limit", type=int, default=1), opt("--carried", action="store_true"), opt("--id")],
+                 "list": [opt("--status")], "triage": [opt("--status")]})
     resolve_opts = [pos("id"), opt("--answer-id"), opt("--interpretation"), opt("--interpretation-file"), opt("--closed-by-name"),
                     opt("--closed-by-role"), opt("--closure-summary"), opt("--confirmation"), opt("--confirmation-file"),
                     opt("--conflict-status", default="PASSED"), opt("--conflicting"), opt("--reviewed"),
                     opt("--change-by-name"), opt("--change-by-role"), opt("--change-statement"),
                     opt("--requirement-updates"), opt("--owner-confirmation")]
     grp("gap", {"show": [pos("id")],
-                "answer": [pos("id"), opt("--response"), opt("--response-file"), opt("--respondent-name"), opt("--respondent-role")],
+                "answer": [pos("id"), opt("--response"), opt("--response-file"), opt("--respondent-name"), opt("--respondent-role"),
+                           opt("--use-suggestion", action="store_true")],
+                "explain": [pos("id")],
+                "carry-forward": [pos("id"), opt("--by-name"), opt("--by-role"), opt("--reason"), opt("--reason-file")],
                 "followup": [pos("id"), opt("--answer-id"), opt("--note")],
                 "conflict": [pos("id"), opt("--answer-id"), opt("--with", dest="with_ids"), opt("--description")],
                 "resolve": resolve_opts,
-                "defer": [pos("id"), opt("--reason"), opt("--owner"), opt("--revisit-by"), opt("--by-name"), opt("--by-role")],
-                "skip": [pos("id")], "revisit": [pos("id")],
-                "reopen": [pos("id"), opt("--reason"), opt("--by-name"), opt("--by-role"), opt("--statement")]})
-    grp("policy", {"set": [opt("--carry-forward"), opt("--by-name"), opt("--by-role"), opt("--statement")]})
+                "defer": [pos("id"), opt("--reason"), opt("--reason-file"), opt("--owner"), opt("--revisit-by"), opt("--by-name"), opt("--by-role")],
+                "answer-later": [pos("id")], "skip": [pos("id")], "revisit": [pos("id")],
+                "reopen": [pos("id"), opt("--reason"), opt("--by-name"), opt("--by-role"), opt("--statement")],
+                "keep": [pos("id")]})
+    grp("policy", {"set": [opt("--carry-forward"), opt("--deferral-revisit-required"), opt("--by-name"), opt("--by-role"),
+                           opt("--statement")]})
     grp("baseline", {"create": [opt("--summary")],
                      "confirm": [opt("--version", type=int), opt("--by-name"), opt("--by-role"), opt("--statement")],
                      "show": [opt("--version", type=int)]})
-    grp("story", {"add": [opt("--file")], "show": [pos("id")],
+    grp("story", {"add": [opt("--file")], "show": [pos("id")], "gaps": [opt("--requirements")], "triage": [], "keep": [pos("id")],
                   "next": [opt("--id"), opt("--deferred", action="store_true"), opt("--unapproved", action="store_true"), opt("--batch", type=int, default=1)],
                   "approve": [pos("id"), opt("--version", type=int), opt("--statement"), opt("--approver-name"), opt("--approver-role")],
                   "edit": [pos("id"), opt("--file"), opt("--reason")],
                   "defer": [pos("id"), opt("--version", type=int), opt("--reason")], "revisit": [pos("id")],
+                  "history": [pos("id")],
+                  "restore": [pos("id"), opt("--reason"), opt("--by-name"), opt("--by-role")],
+                  "revert-edit": [pos("id"), opt("--reason"), opt("--by-name"), opt("--by-role")],
                   "request-changes": [pos("id"), opt("--version", type=int), opt("--note")],
                   "confirm-unaffected": [pos("id"), opt("--statement"), opt("--by-name"), opt("--by-role")]})
     return ap
@@ -127,24 +149,48 @@ def _open(a) -> Project:
 
 
 def run(a) -> dict | str:
+    p, out = _run(a)
+    if p is not None and a.group not in ("status", "validate", "trace"):
+        done = changemod.reconcile(p)  # close change items whose underlying work is now complete
+        if done and isinstance(out, dict):
+            out["changes_reconciled"] = done
+    return out
+
+
+def _run(a):
     g, act = a.group, getattr(a, "action", None)
     if g == "fingerprint":
         fp = Path(a.file)
         if not fp.is_file():
             raise BAError("SOURCE_NOT_FOUND", f"{fp} not found")
-        return {"file": str(fp.resolve()), "fingerprint": sha256_file(fp)}
+        return None, {"file": str(fp.resolve()), "fingerprint": sha256_file(fp)}
     if g == "init":
         if not a.root:
             raise BAError("NO_PROJECT", "init requires --root <project folder> explicitly confirmed by the user.")
         p = Project.create(a.root, a.brd, a.name, a.copy_source)
         meta = p.source_metadata()
-        return {"project_root": str(p.root), "project_id": p.state["project_id"], "stage": p.state["stage"],
+        return None, {"project_root": str(p.root), "project_id": p.state["project_id"], "stage": p.state["stage"],
                 "source": {"format": meta["format"], "fingerprint": meta["fingerprint"], "sections": len(meta["sections"]),
                            "parser": meta["parser"]},
                 "warnings": meta["warnings"], "instruction_like_lines": len(meta["injection_suspects"]),
                 "outline": [{"id": s["section_id"], "title": s["title"], "lines": [s["line_start"], s["line_end"]]} for s in meta["sections"]],
                 "next": "Decompose the BRD into atomic requirements (`req add`)."}
     p = _open(a)
+    key = (g, act if (g, act) in GUARDED or (g, act) in CHECKED else None)
+    checked = None
+    if key in GUARDED:
+        changemod.guard(p, f"{g} {act}")
+    elif key in CHECKED:
+        checked = changemod.check(p, True, f"{g} {act}" if act else g)
+    out = _dispatch(a, p, g, act)
+    if checked is not None and isinstance(out, dict):
+        out["change_check"] = {"unreviewed": checked["unreviewed_ids"], "awaiting_reconciliation": checked["awaiting_reconciliation"],
+                               "formatting_only_accepted": checked["formatting_only_accepted"], "warnings": checked["warnings"],
+                               "note": checked["next"] if checked["unreviewed_ids"] else None}
+    return p, out
+
+
+def _dispatch(a, p, g, act):
     if g == "status":
         r = checks.status_report(p)
         return r if a.json else checks.status_text(r)
@@ -160,13 +206,27 @@ def run(a) -> dict | str:
         return r
     if g == "report":
         return checks.write_summary(p)
-    if g == "source":
+    if g == "changes":
         if act == "check":
-            return reqmod.source_check(p)
+            return changemod.check(p, not a.no_record, "changes check")
+        if act == "apply":
+            return changemod.apply(p, a.id, a.by_name, a.by_role, a.statement)
+        if act == "list":
+            return {"changes": [changemod._row(r) for r in changemod.records(p, a.status.upper() if a.status else None)]}
+        if act == "show":
+            return changemod.get(p, a.id)
+        if act == "dismiss":
+            return changemod.dismiss(p, a.id, a.item, a.reason, a.by_name, a.by_role)
+        return changemod.status(p)
+    if g == "source":
+        if act == "check":  # detect + explain only; `changes apply` is what touches downstream artifacts
+            return changemod.check(p, not a.no_record, "source check")
         if act == "accept":
             return reqmod.source_accept(p, a.by_name, a.by_role, a.statement)
         if act == "section":
             return reqmod.source_section(p, a.section_id, a.allow_changed)
+        if act == "history":
+            return snapshots.index(p)
         return {"outline": p.source_metadata()["sections"]}
     if g == "req":
         if act == "add":
@@ -200,14 +260,21 @@ def run(a) -> dict | str:
         if act == "commit":
             return gapmod.commit_analysis(p, a.cross_pass_done)
         if act == "next":
-            return gapmod.next_gaps(p, a.limit)
-        return {"gaps": [{k: x[k] for k in ("gap_id", "category", "priority", "status", "title", "impacted_requirement_ids", "decision_id")}
+            return gapmod.next_gaps(p, a.limit, a.carried, a.id)
+        if act == "triage":
+            return gapmod.triage(p, a.status)
+        return {"gaps": [dict({k: x[k] for k in ("gap_id", "category", "priority", "status", "title", "impacted_requirement_ids", "decision_id")},
+                              carried_forward=bool(x.get("carry_forward")))
                          for x in p.gaps() if not a.status or x["status"] == a.status]}
     if g == "gap":
         if act == "show":
             return p.gap(a.id)
         if act == "answer":
-            return gapmod.record_answer(p, a.id, _text(a, "response"), a.respondent_name, a.respondent_role)
+            return gapmod.record_answer(p, a.id, _text(a, "response"), a.respondent_name, a.respondent_role, a.use_suggestion)
+        if act == "explain":
+            return gapmod.explain(p, a.id)
+        if act == "carry-forward":
+            return gapmod.carry_forward(p, a.id, a.by_name, a.by_role, _text(a, "reason"))
         if act == "followup":
             return gapmod.followup(p, a.id, a.answer_id, a.note)
         if act == "conflict":
@@ -220,15 +287,19 @@ def run(a) -> dict | str:
                 _text(a, "confirmation"), a.conflict_status, _csv(a.conflicting), _csv(a.reviewed), a.change_by_name,
                 a.change_by_role, a.change_statement, ru, a.owner_confirmation)
         if act == "defer":
-            return gapmod.defer(p, a.id, a.reason, a.owner, a.revisit_by, a.by_name, a.by_role)
-        if act == "skip":
-            return gapmod.skip(p, a.id)
+            return gapmod.defer(p, a.id, _text(a, "reason"), a.owner, a.revisit_by, a.by_name, a.by_role)
+        if act in ("answer-later", "skip"):
+            return gapmod.answer_later(p, a.id)
         if act == "revisit":
             return gapmod.revisit(p, a.id)
         if act == "reopen":
             return gapmod.reopen(p, a.id, a.reason, a.by_name, a.by_role, a.statement)
+        if act == "keep":
+            return gapmod.keep(p, a.id)
     if g == "policy":
-        return gapmod.set_policy(p, str(a.carry_forward).lower() in TRUE, a.by_name, a.by_role, a.statement)
+        cf = None if a.carry_forward is None else str(a.carry_forward).lower() in TRUE
+        dr = None if a.deferral_revisit_required is None else [x.upper() for x in _csv(a.deferral_revisit_required) if x.lower() != "none"]
+        return gapmod.set_policy(p, cf, a.by_name, a.by_role, a.statement, dr)
     if g == "baseline":
         if act == "create":
             return basemod.create(p, a.summary)
@@ -245,6 +316,12 @@ def run(a) -> dict | str:
             return storymod.next_story(p, a.id, a.deferred, a.batch, a.unapproved)
         if act == "show":
             return storymod._load(p, a.id)[1]
+        if act == "triage":
+            return storymod.triage(p)
+        if act == "keep":
+            return storymod.keep(p, a.id)
+        if act == "gaps":
+            return storymod.gap_context(p, _csv(a.requirements))
         if act == "approve":
             return storymod.approve(p, a.id, a.version, a.statement, a.approver_name, a.approver_role)
         if act == "edit":
@@ -257,6 +334,12 @@ def run(a) -> dict | str:
             return storymod.request_changes(p, a.id, a.version, a.note)
         if act == "confirm-unaffected":
             return storymod.confirm_unaffected(p, a.id, a.statement, a.by_name, a.by_role)
+        if act == "history":
+            return changemod.story_history(p, a.id)
+        if act == "restore":
+            return changemod.restore_story(p, a.id, a.reason, a.by_name, a.by_role)
+        if act == "revert-edit":
+            return changemod.revert_edit(p, a.id, a.reason, a.by_name, a.by_role)
     raise BAError("USAGE", f"Unhandled command {g} {act}")
 
 

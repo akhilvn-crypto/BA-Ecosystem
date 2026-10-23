@@ -12,7 +12,8 @@ ACTIVE = ("ACTIVE",)
 def inputs_hash(p) -> str:
     reqs = [(r["requirement_id"], r["version"], r["statement"], r["status"]) for r in p.requirements()]
     decs = [(d["decision_id"], d["validated_interpretation"], d["current_status"]) for d in p.decisions().values()]
-    gps = [(g["gap_id"], g["status"], g["priority"], tuple(g["impacted_requirement_ids"])) for g in p.gaps()]
+    gps = [(g["gap_id"], g["status"], g["priority"], tuple(g["impacted_requirement_ids"]))
+           + (("carried-forward",) if g.get("carry_forward") else ()) for g in p.gaps()]
     return sha256_text(canonical_json({"r": reqs, "d": decs, "g": gps, "policy": p.state["policy"]}))
 
 
@@ -45,6 +46,7 @@ def create(p, summary: str | None = None) -> dict:
         return {"reused": True, "version": latest["version"], "status": latest["status"],
                 "note": "Inputs unchanged since this baseline; nothing regenerated."}
     blocked = gapmod.blocked_requirements(p)
+    open_ok = gapmod.open_nonblocking_requirements(p)
     reqs = [r for r in p.requirements() if r["status"] == "ACTIVE"]
     decisions = {k: v for k, v in p.decisions().items() if v["current_status"] == "ACTIVE"}
     version = (latest["version"] + 1) if latest else 1
@@ -56,9 +58,10 @@ def create(p, summary: str | None = None) -> dict:
                                    "outcomes", "constraints", "dependencies", "acceptance_info", "assumptions")}
         entry["baseline_status"] = "BLOCKED" if r["requirement_id"] in blocked else "READY"
         entry["blocked_by_gap_ids"] = blocked.get(r["requirement_id"], [])
+        entry["open_gap_ids"] = open_ok.get(r["requirement_id"], [])  # READY, but these gaps are still unresolved
         entries.append(entry)
-    outstanding = [{k: g[k] for k in ("gap_id", "title", "priority", "status", "impacted_requirement_ids")}
-                   for g in p.gaps() if g["status"] != "RESOLVED"]
+    outstanding = [dict({k: g[k] for k in ("gap_id", "title", "priority", "status", "impacted_requirement_ids")},
+                        carried_forward=gapmod.is_carried(p, g)) for g in p.gaps() if g["status"] != "RESOLVED"]
     prev = p.read_json(f"baselines/baseline-v{latest['version']}.json") if latest else None
     pm = {e["requirement_id"]: e for e in prev["requirements"]} if prev else {}
     cm = {e["requirement_id"]: e for e in entries}
@@ -90,6 +93,8 @@ def create(p, summary: str | None = None) -> dict:
         p.save_state(f"baseline-v{version}-created")
     return {"reused": False, "version": version, "status": "PROPOSED", "ready_requirements": m["versions"][-1]["ready"],
             "blocked_requirements": m["versions"][-1]["blocked"], "changes": change,
+            "ready_with_open_gaps": {e["requirement_id"]: e["open_gap_ids"] for e in entries
+                                     if e["baseline_status"] == "READY" and e["open_gap_ids"]},
             "next": "Show the baseline to the user and ask for explicit confirmation (`baseline confirm`)."}
 
 
@@ -144,12 +149,14 @@ def _markdown(d: dict) -> str:
             f"- New decisions: {', '.join(ch['new_decisions']) or 'none'}", "", "## Requirements"]
     for r in d["requirements"]:
         tag = "READY" if r["baseline_status"] == "READY" else f"BLOCKED by {', '.join(r['blocked_by_gap_ids'])}"
+        if r["baseline_status"] == "READY" and r.get("open_gap_ids"):
+            tag = f"READY with open gaps {', '.join(r['open_gap_ids'])} (stories must name them)"
         out += [f"### {r['requirement_id']}: {r['title']} (v{r['version']}) — {tag}", r["statement"],
                 f"- Source: {r['source_reference']}", f"- Decisions: {', '.join(r['related_decision_ids']) or 'none'}", ""]
     out += ["## Confirmed decisions"]
     out += [f"- **{x['decision_id']}** ({x['gap_id']}, {human_ist(x['timestamp_ist'])}; owner {x['decision_owner']}): {x['interpretation']}"
             for x in d["decisions"]] or ["- none"]
     out += ["", "## Outstanding gaps (NOT resolved)"]
-    out += [f"- **{g['gap_id']}** [{g['priority']}, {g['status']}] {g['title']} → affects {', '.join(g['impacted_requirement_ids'])}"
-            for g in d["outstanding_gaps"]] or ["- none"]
+    out += [f"- **{g['gap_id']}** [{g['priority']}, {g['status']}{', CARRIED FORWARD' if g.get('carried_forward') else ''}] {g['title']} "
+            f"→ affects {', '.join(g['impacted_requirement_ids'])}" for g in d["outstanding_gaps"]] or ["- none"]
     return "\n".join(out) + "\n"

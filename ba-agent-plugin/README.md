@@ -9,10 +9,11 @@ Turn a Business Requirements Document (BRD) into **traceable atomic requirements
 | Intake | BRD (`.md`, `.txt`, `.docx`) is fingerprinted and outlined; the original is never modified | You pick the BRD and the output folder |
 | Requirements | Atomic `REQ-###` records with verbatim source quotes and section references | — |
 | Gap analysis | Evidence-based gaps (10-category taxonomy, justified priority, one question each) + cross-requirement pass | — |
-| Gap resolution | Asks **who the decision owner is (name + role) before the first gap**; checks every answer for completeness and conflicts; closes gaps with an IST audit record | You answer, confirm, defer, reopen |
+| Gap resolution | Asks **who the decision owner is (name + role) before the first gap**; presents gaps highest priority first — Critical/High/material gaps with Other / Explain This Question / Answer Later / Defer This Gap, Medium/Low gaps with Suggested Answer (evidence only) / Other / Explain This Question / Carry Forward; validates every answer against the BRD, requirements, decisions and business rules; closes a gap only with a validated, conflict-free answer and an IST audit record; a carried-forward gap stays OPEN until resolved | You answer, confirm, carry forward, answer later, defer (with a reason), reopen |
 | Baseline | Versioned `baseline-vN` with decisions and outstanding gaps | You confirm it |
-| Stories | Candidate stories with Given/When/Then criteria, linked to requirements and decisions | You approve / edit / defer each |
+| Stories | Candidate stories with Given/When/Then criteria, linked to requirements, decisions and any open gaps (with the potential impact and a readiness flag: ready / needs clarification / not ready) | You approve / edit / defer each |
 | Output | `stories/approved/` contains only explicitly approved versions; edits create new versions that need re-approval | — |
+| Change control | The accepted BRD and every approved story are snapshotted and hashed. Edits are detected (added / modified / deleted), explained with their impact **before** anything is updated, and classified material vs formatting-only; affected artifacts are marked stale until reconciled; manual edits are kept, never discarded; approval history is preserved | You decide whether to apply a change |
 
 Everything is resumable: state, decisions and the audit trail live in the project folder, not in the chat.
 
@@ -21,9 +22,9 @@ Everything is resumable: state, decisions and the audit trail live in the projec
 **Claude Code CLI** (tested): `claude --plugin-dir /path/to/ba-agent-plugin` (one session), then `/ba-agent:start path/to/BRD.docx`.
 Persistent (not run here, as it changes your Claude config): from the folder that contains `.claude-plugin/marketplace.json` (`D:\BA-Agents`) run `claude plugin marketplace add ./` then `claude plugin install ba-agent@ba-agents`.
 
-**Claude Cowork** (not verified in this environment): build the upload file with `python scripts/package_plugin.py` → `dist/ba-agent-1.1.0.zip`, then *Customize → Plugins → Add → Upload plugin*. Commands appear as `/ba-agent:start` etc. Cowork's local-folder and script-execution behaviour is not documented well enough to claim support — see the compatibility report.
+**Claude Cowork** (not verified in this environment): build the upload file with `python scripts/package_plugin.py` → `dist/ba-agent-1.5.0.zip`, then *Customize → Plugins → Add → Upload plugin*. Commands appear as `/ba-agent:start` etc. Cowork's local-folder and script-execution behaviour is not documented well enough to claim support — see the compatibility report.
 
-Commands: `/ba-agent:start [BRD or project folder]` · `/ba-agent:status` · `/ba-agent:review`. You normally only need `start`.
+Commands: `/ba-agent:start [BRD or project folder]` · `/ba-agent:status` · `/ba-agent:review` · `/ba-agent:triage-gaps` · `/ba-agent:triage-stories` · `/ba-agent:changes`. You normally only need `start`.
 
 ## Requirements
 
@@ -32,7 +33,7 @@ Python 3.9+ on the machine that runs the plugin (standard library only — **not
 ## Develop / test
 
 ```
-python -m unittest discover -s tests -t . -v      # run from this folder; 80+ tests
+python -m unittest discover -s tests -t . -v      # run from this folder; 235 tests
 claude plugin validate .                            # manifest, skills, agents, commands
 ```
 

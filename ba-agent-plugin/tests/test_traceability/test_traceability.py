@@ -51,7 +51,8 @@ class StoryGenerationTests(BATest):
         p = self.with_gaps()
         self.set_owner(p)
         gapmod.next_gaps(p, 3)
-        gapmod.defer(p, "GAP-001", "Waiting for finance", owner="Finance", revisit_by="2026-11-30")
+        gapmod.defer(p, "GAP-001", "Waiting for finance", owner="Finance", revisit_by="2026-11-30",
+                    by_name="Priya Nair", by_role="Product Owner")
         self.answer_and_resolve(p, "GAP-002", "Under 3 seconds.", "Mobile page load is under 3 seconds.")
         self.answer_and_resolve(p, "GAP-003", "Reject with message.", "A 6th borrow is rejected with a message.")
         gapmod.commit_analysis(p, True)
@@ -78,7 +79,7 @@ class StoryGenerationTests(BATest):
         gapmod.next_gaps(p, 3)
         self.answer_and_resolve(p, "GAP-001", "R10/day max R200", "Fine is R10/day, max R200.")
         self.answer_and_resolve(p, "GAP-003", "Reject with message", "A 6th borrow is rejected with a message.")
-        gapmod.defer(p, "GAP-002", "later")  # MEDIUM
+        gapmod.defer(p, "GAP-002", "later", by_name="Priya Nair", by_role="Product Owner")  # MEDIUM
         gapmod.commit_analysis(p, True)
         basemod.create(p)
         base = p.read_json("baselines/baseline-v1.json")
@@ -198,8 +199,10 @@ class StoryReviewTests(BATest):
         p = self.to_stories()
         gapmod.add_gaps(p, [dict(self.gap_items()[0], title="Email rules", question="Are disposable email domains allowed?",
                                  priority="LOW", priority_rationale="Minor", impacted_requirement_ids=["REQ-001"], material=False)])
-        # new gap stales the baseline, so approval is refused until re-baselined
-        self.assertEqual(code_of(stories.approve, p, "US-001", 1, "ok"), "BASELINE_STALE")
+        # the new gap flags the existing story (it must name the gap) and stales the baseline: approval is refused
+        self.assertEqual(code_of(stories.approve, p, "US-001", 1, "ok"), "IMPACT_REVIEW_PENDING")
+        self.assertIn("GAP-004", p.read_json("stories/candidates/US-001.json")["impact_review"]["reason"])
+        self.assertTrue(p.baseline_manifest()["stale"])
 
 
 class CoverageAndCompletionTests(BATest):
