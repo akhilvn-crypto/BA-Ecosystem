@@ -287,7 +287,7 @@ class StoryTriageListTests(StoryBase):
         self.assertEqual(out["eligible"], ["US-001", "US-002", "US-003"])
         by = {r["story_id"]: r for r in out["stories"]}
         self.assertEqual(by["US-002"]["last_review_note"]["note"], "criteria too vague")
-        self.assertEqual(by["US-002"]["location"], "stories/unapproved/US-002.md")
+        self.assertEqual(by["US-002"]["location"], "stories/unapproved/md/US-002.md")
         self.assertEqual(by["US-003"]["deferral"]["reason"], "waiting for the policy team")
         self.assertTrue(by["US-003"]["deferral"]["at_ist"].endswith("+05:30"))
         self.assertEqual(by["US-001"]["requirement_ids"], ["REQ-001"])
@@ -331,14 +331,14 @@ class StoryTriageActionTests(StoryBase):
             out = stories.next_story(p, sid)
             self.assertEqual([(s["story_id"], s["status"]) for s in out["stories"]], [(sid, status)])
         self.assertEqual(code_of(stories.next_story, p, "US-099"), "UNKNOWN_STORY")
-        self.assertTrue(p.exists("stories/unapproved/US-002.json") and p.exists("stories/deferred/US-003.json"),
+        self.assertTrue(p.exists("stories/unapproved/json/US-002.json") and p.exists("stories/deferred/json/US-003.json"),
                         "presenting does not move not-approved or deferred stories")
 
     def test_approve_a_pending_story(self):
         p = self.three_buckets()
         stories.next_story(p, "US-001")
         out = stories.approve(p, "US-001", 1, "Approved, looks right.", *OWNER)
-        self.assertEqual((out["status"], out["location"]), ("APPROVED", "stories/approved/US-001.md"))
+        self.assertEqual((out["status"], out["location"]), ("APPROVED", "stories/approved/md/US-001.md"))
         self.assertNotIn("US-001", ids(stories.triage(p)["stories"], "story_id"))
         self.assertEqual(self.events(p, "STORY_APPROVED")[-1]["statement"], "Approved, looks right.")
 
@@ -346,11 +346,11 @@ class StoryTriageActionTests(StoryBase):
         p = self.three_buckets()
         self.assertEqual(code_of(stories.approve, p, "US-003", 1, "approve"), "STORY_DEFERRED")
         stories.revisit(p, "US-003")
-        self.assertEqual(p.read_json("stories/candidates/US-003.json")["status"], "CANDIDATE")
-        self.assertFalse(p.exists("stories/deferred/US-003.json"))
+        self.assertEqual(p.read_json("stories/candidates/json/US-003.json")["status"], "CANDIDATE")
+        self.assertFalse(p.exists("stories/deferred/json/US-003.json"))
         stories.next_story(p, "US-003")
         stories.approve(p, "US-003", 1, "Policy team confirmed; approve.", *OWNER)
-        s = p.read_json("stories/approved/US-003.json")
+        s = p.read_json("stories/approved/json/US-003.json")
         self.assertEqual(s["approval"]["version"], 1)
         self.assertEqual([h["action"] for h in s["review_history"]][-4:], ["DEFERRED", "REVISITED", "PRESENTED", "APPROVED"])
         self.assertEqual(self.events(p, "STORY_REVISITED")[-1]["from_status"], "DEFERRED")
@@ -360,9 +360,9 @@ class StoryTriageActionTests(StoryBase):
         p = self.three_buckets()
         self.assertEqual(code_of(stories.approve, p, "US-002", 1, "approve"), "STORY_UNAPPROVED")
         self.assertEqual(stories.revisit(p, "US-002")["status"], "CANDIDATE")
-        self.assertFalse(p.exists("stories/unapproved/US-002.json"))
+        self.assertFalse(p.exists("stories/unapproved/json/US-002.json"))
         stories.approve(p, "US-002", 1, "On reflection it is fine; approve.", *OWNER)
-        self.assertTrue(p.exists("stories/approved/US-002.json"))
+        self.assertTrue(p.exists("stories/approved/json/US-002.json"))
         self.assertEqual(self.events(p, "STORY_REVISITED")[-1]["from_status"], "CHANGES_REQUESTED")
         self.assertTrue(checks.validate_project(p)["ok"], checks.validate_project(p))
 
@@ -371,9 +371,9 @@ class StoryTriageActionTests(StoryBase):
         for sid in ("US-001", "US-002", "US-003"):
             out = stories.edit(p, sid, {"title": f"Reworded {sid} title"}, "user suggested a clearer title")
             self.assertEqual((out["new_version"], out["status"], out["requires_approval"]), (2, "CANDIDATE", True))
-            self.assertTrue(p.exists(f"stories/candidates/{sid}.json"))
-            self.assertTrue(p.exists(f"stories/archive/{sid}.v1.json"), "the earlier version is kept")
-            self.assertFalse(p.exists(f"stories/approved/{sid}.json"), "an edit is never an approval")
+            self.assertTrue(p.exists(f"stories/candidates/json/{sid}.json"))
+            self.assertTrue(p.exists(f"stories/archive/json/{sid}.v1.json"), "the earlier version is kept")
+            self.assertFalse(p.exists(f"stories/approved/json/{sid}.json"), "an edit is never an approval")
         for bucket in ("unapproved", "deferred"):
             self.assertEqual(list(p.path(f"stories/{bucket}").glob("US-*.json")), [])
         self.assertEqual([(r["story_id"], r["version"], r["status"]) for r in stories.triage(p)["stories"]],
@@ -387,7 +387,7 @@ class StoryTriageActionTests(StoryBase):
         p = self.three_buckets()
         out = stories.edit(p, "US-004", {"title": "Record loan dates and due dates"}, "clearer title")
         self.assertTrue(out["approved_version_still_in_force"])
-        self.assertEqual(p.read_json("stories/approved/US-004.json")["version"], 1)
+        self.assertEqual(p.read_json("stories/approved/json/US-004.json")["version"], 1)
         self.assertEqual(ids(stories.triage(p)["stories"], "story_id"), ["US-001", "US-004", "US-002", "US-003"])
 
     def test_defer_a_pending_or_not_approved_story_and_it_stays_available(self):
@@ -396,8 +396,8 @@ class StoryTriageActionTests(StoryBase):
         stories.defer(p, "US-001", 1, "need the product owner's input")
         self.assertEqual(stories.defer(p, "US-002", 1, "park until the wording is agreed")["status"], "DEFERRED")
         for sid in ("US-001", "US-002"):
-            self.assertTrue(p.exists(f"stories/deferred/{sid}.json") and p.exists(f"stories/deferred/{sid}.md"))
-        self.assertFalse(p.exists("stories/unapproved/US-002.json"))
+            self.assertTrue(p.exists(f"stories/deferred/json/{sid}.json") and p.exists(f"stories/deferred/md/{sid}.md"))
+        self.assertFalse(p.exists("stories/unapproved/json/US-002.json"))
         self.assertEqual(self.events(p, "STORY_DEFERRED")[-1]["from_status"], "CHANGES_REQUESTED")
         rows = {r["story_id"]: r for r in stories.triage(p)["stories"]}
         self.assertEqual([rows[s]["status"] for s in ("US-001", "US-002", "US-003")], ["DEFERRED"] * 3)
@@ -433,9 +433,9 @@ class StoryTriageActionTests(StoryBase):
         stories.approve(p, "US-003", 2, "Approved v2.", *OWNER)
         trail = [e["event_type"] for e in p.audit_events() if e.get("story_id") == "US-003"]
         self.assertEqual(trail, ["STORY_DEFERRED", "STORY_REVISITED", "STORY_EDITED", "STORY_APPROVED"])
-        hist = [h["action"] for h in p.read_json("stories/approved/US-003.json")["review_history"]]
+        hist = [h["action"] for h in p.read_json("stories/approved/json/US-003.json")["review_history"]]
         self.assertEqual(hist, ["GENERATED", "PRESENTED", "DEFERRED", "REVISITED", "EDITED", "PRESENTED", "APPROVED"])
-        self.assertTrue(p.exists("stories/archive/US-003.v1.json"))
+        self.assertTrue(p.exists("stories/archive/json/US-003.v1.json"))
 
     def test_traceability_and_resume(self):
         p = self.three_buckets()

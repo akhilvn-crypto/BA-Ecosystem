@@ -12,7 +12,7 @@ The core keeps a **snapshot of the accepted BRD** and, for every approved story,
 - After the user says they edited the BRD or a story.
 
 ## What it tells you
-`python … changes check` → for each change a record (`changes/CHG-nnn.md` is the readable copy): **what changed** (sections added / modified / deleted with the old and new lines; story fields), **when detected**, **impact** (affected requirements, open gaps, confirmed decisions to re-validate, linked and approved stories, baseline, workflow stage), **required actions**.
+`python … changes check` → for each change a record (`changes/md/CHG-nnn.md` is the readable copy, `changes/json/CHG-nnn.json` the record): **what changed** (sections added / modified / deleted with the old and new lines; story fields), **when detected**, **impact** (affected requirements, open gaps, confirmed decisions to re-validate, linked and approved stories, baseline, workflow stage), **required actions**.
 - `MATERIAL` — the meaning changed (a word, number, rule, a section added or removed, an acceptance criterion). Needs the user's decision.
 - `FORMATTING_ONLY` — layout/markup/whitespace/re-wrapping/bold only (BRD) or whitespace/Markdown decoration (story). The core accepts these itself, records them (`RECORDED`, audit event) and nothing is flagged: **do not ask the user to review them**; mention them in one line.
 

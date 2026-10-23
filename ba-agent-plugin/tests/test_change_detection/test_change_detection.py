@@ -41,10 +41,10 @@ class ChangeTest(BATest):
         return p
 
     def approved_json(self, p, sid="US-001") -> dict:
-        return json.loads((p.root / "stories" / "approved" / f"{sid}.json").read_text(encoding="utf-8"))
+        return json.loads((p.root / "stories" / "approved" / "json" / f"{sid}.json").read_text(encoding="utf-8"))
 
     def write_approved_json(self, p, s, sid="US-001"):
-        (p.root / "stories" / "approved" / f"{sid}.json").write_text(json.dumps(s, indent=2), encoding="utf-8")
+        (p.root / "stories" / "approved" / "json" / f"{sid}.json").write_text(json.dumps(s, indent=2), encoding="utf-8")
 
     def events(self, p, kind=None):
         return [e for e in p.audit_events() if not kind or e["event_type"] == kind]
@@ -111,8 +111,8 @@ class BrdChangeDetectionTests(ChangeTest):
         self.assertTrue(imp["decisions_to_revalidate"], "confirmed decisions are listed for re-validation, never invalidated")
         self.assertTrue(all(d["current_status"] == "ACTIVE" for d in p.decisions().values()))
         self.assertTrue(rec["required_actions"])
-        self.assertTrue(p.exists("changes/CHG-001.md"))
-        self.assertIn("21 days", (p.root / "changes" / "CHG-001.md").read_text(encoding="utf-8"))
+        self.assertTrue(p.exists("changes/md/CHG-001.md"))
+        self.assertIn("21 days", (p.root / "changes" / "md" / "CHG-001.md").read_text(encoding="utf-8"))
 
         # NOTHING downstream changed yet, and the BRD itself is untouched
         self.assertEqual(p.requirement("REQ-004")["status"], "ACTIVE")
@@ -171,7 +171,7 @@ class BrdChangeDetectionTests(ChangeTest):
         self.assertEqual(p.requirement("REQ-007")["status"], "NEEDS_REVIEW")
         self.assertEqual(code_of(reqs.source_accept, p, *PO, "ok"), "IMPACT_REVIEW_INCOMPLETE")
         reqs.remove_requirement(p, "REQ-007", "Dropped from the BRD", *PO)
-        self.assertTrue(p.exists("atomic-requirements/REQ-007.md"), "removed requirements are retained, never deleted")
+        self.assertTrue(p.exists("atomic-requirements/md/REQ-007.md"), "removed requirements are retained, never deleted")
 
     def test_added_section_is_listed_and_closed_by_requirement_or_dismissal(self):
         p = self.with_requirements()
@@ -331,7 +331,7 @@ class StoryChangeDetectionTests(ChangeTest):
         s = self.approved_json(p)
         s["acceptance_criteria"].append("Given a duplicate email, when they submit registration, then an error is shown.")
         self.write_approved_json(p, s)
-        edited = (p.root / "stories" / "approved" / "US-001.json").read_bytes()
+        edited = (p.root / "stories" / "approved" / "json" / "US-001.json").read_bytes()
 
         out = changes.check(p)
 
@@ -343,8 +343,8 @@ class StoryChangeDetectionTests(ChangeTest):
         self.assertEqual(rec["impact"]["approval_record"]["approver_name"], "Priya Nair")
         self.assertTrue(rec["required_actions"])
         # detection alone leaves the edited file exactly as the user left it
-        self.assertEqual((p.root / "stories" / "approved" / "US-001.json").read_bytes(), edited)
-        self.assertFalse(list((p.root / "stories" / "candidates").glob("US-001*")))
+        self.assertEqual((p.root / "stories" / "approved" / "json" / "US-001.json").read_bytes(), edited)
+        self.assertFalse(list((p.root / "stories" / "candidates").rglob("US-001*")))
 
     def test_applying_a_material_manual_edit_keeps_everything_and_requires_reapproval(self):
         p = self.two_approved()
@@ -352,7 +352,7 @@ class StoryChangeDetectionTests(ChangeTest):
         s = json.loads(json.dumps(approved_before))
         s["acceptance_criteria"][0] = "Given a visitor with a valid email, when they register, then a member account is created and a welcome page is shown."
         self.write_approved_json(p, s)
-        edited_bytes = (p.root / "stories" / "approved" / "US-001.json").read_bytes()
+        edited_bytes = (p.root / "stories" / "approved" / "json" / "US-001.json").read_bytes()
         cid = changes.check(p)["changes"][0]["change_id"]
 
         out = changes.apply(p, cid, *PO, "Seen. Keep the edit as a new version for review.")
@@ -365,7 +365,7 @@ class StoryChangeDetectionTests(ChangeTest):
         self.assertEqual(restored["acceptance_criteria"], approved_before["acceptance_criteria"])
         self.assertEqual(storytrack.material_hash(restored), storytrack.current(storytrack.entry(p, "US-001"))["material_hash"])
         # the manual edit is NOT discarded: it is a new candidate version, and the verbatim file is kept
-        cand = json.loads((p.root / "stories" / "candidates" / "US-001.json").read_text(encoding="utf-8"))
+        cand = json.loads((p.root / "stories" / "candidates" / "json" / "US-001.json").read_text(encoding="utf-8"))
         self.assertEqual((cand["version"], cand["status"], cand["approval"], cand["supersedes_version"]), (2, "CANDIDATE", None, 1))
         self.assertIn("welcome page", cand["acceptance_criteria"][0])
         self.assertEqual(cand["review_history"][-1]["action"], "MANUAL_EDIT_DETECTED")
@@ -388,12 +388,12 @@ class StoryChangeDetectionTests(ChangeTest):
         self.assertEqual([v["version"] for v in hist["approved_versions"]], [1, 2])
         self.assertEqual([v["in_force"] for v in hist["approved_versions"]], [False, True])
         self.assertEqual(hist["approved_versions"][0]["approval_statement"], "I approve US-001 v1.")
-        self.assertTrue(p.exists("stories/archive/US-001.v1.json"))
+        self.assertTrue(p.exists("stories/archive/json/US-001.v1.json"))
         self.assertEqual(changes.check(p)["changes"], [])
 
     def test_manual_edit_of_the_markdown_copy_is_detected_too(self):
         p = self.two_approved()
-        md = p.root / "stories" / "approved" / "US-001.md"
+        md = p.root / "stories" / "approved" / "md" / "US-001.md"
         text = md.read_text(encoding="utf-8")
         self.assertIn("1. Given a visitor with a valid email", text)
         md.write_text(text.replace("then a member account is created.", "then a member account is created and a welcome email is queued."), encoding="utf-8")
@@ -401,11 +401,11 @@ class StoryChangeDetectionTests(ChangeTest):
         self.assertEqual(rec["subject"]["edited_via"], "markdown")
         self.assertIn("acceptance_criteria", rec["changes"][0]["fields"])
         changes.apply(p, rec["change_id"], *PO, "apply")
-        cand = json.loads((p.root / "stories" / "candidates" / "US-001.json").read_text(encoding="utf-8"))
+        cand = json.loads((p.root / "stories" / "candidates" / "json" / "US-001.json").read_text(encoding="utf-8"))
         self.assertIn("welcome email is queued", cand["acceptance_criteria"][0])
         self.assertEqual(cand["version"], 2)
         # the JSON of the approved version was never wrong, and its .md is regenerated from it
-        self.assertNotIn("welcome email", (p.root / "stories" / "approved" / "US-001.md").read_text(encoding="utf-8"))
+        self.assertNotIn("welcome email", (p.root / "stories" / "approved" / "md" / "US-001.md").read_text(encoding="utf-8"))
         self.assertEqual(self.approved_json(p)["version"], 1)
 
     def test_formatting_only_story_edits_do_not_touch_the_approval(self):
@@ -415,7 +415,7 @@ class StoryChangeDetectionTests(ChangeTest):
         s["title"] = "  Register   as a   member  "
         s["acceptance_criteria"][1] = "Given an invalid email,   when they submit registration,  then an error is shown and no account is created.  "
         self.write_approved_json(p, s)
-        md = p.root / "stories" / "approved" / "US-002.md"
+        md = p.root / "stories" / "approved" / "md" / "US-002.md"
         md.write_text(md.read_text(encoding="utf-8").replace("### User Story", "\n\n### User Story\n"), encoding="utf-8")
         out = changes.check(p)
         self.assertFalse(out["requires_review"])
@@ -424,7 +424,7 @@ class StoryChangeDetectionTests(ChangeTest):
         self.assertTrue(all(r["classification"] == "FORMATTING_ONLY" and r["status"] == "RECORDED" for r in out["formatting_only_accepted"]))
         self.assertEqual(self.approved_json(p)["version"], 1)
         self.assertEqual(self.approved_json(p)["approval"], before["approval"])
-        self.assertFalse(list((p.root / "stories" / "candidates").glob("US-*")))
+        self.assertFalse(list((p.root / "stories" / "candidates").rglob("US-*")))
         self.assertEqual(len(self.events(p, "STORY_FORMATTING_CHANGE_RECORDED")), 2)
         self.assertEqual(changes.check(p)["formatting_only_accepted"], [], "accepted once, not re-flagged")
         self.assertTrue(checks.validate_project(p)["ok"], checks.validate_project(p)["errors"])
@@ -442,7 +442,7 @@ class StoryChangeDetectionTests(ChangeTest):
         self.assertEqual(s["approval"]["approver_name"], "Priya Nair")
         self.assertTrue(s["impact_review"]["pending"], "the story is flagged until a person reviews it")
         self.assertIn("altered by hand", s["impact_review"]["reason"])
-        self.assertFalse(list((p.root / "stories" / "candidates").glob("US-001*")), "no material edit, so no new version")
+        self.assertFalse(list((p.root / "stories" / "candidates").rglob("US-001*")), "no material edit, so no new version")
         self.assertTrue(any(p.root.joinpath("snapshots", "stories").glob("US-001.observed-*.json")), "the altered file is kept")
 
     def test_linked_requirements_changed_by_hand_show_up_in_the_impact(self):
@@ -458,8 +458,8 @@ class StoryChangeDetectionTests(ChangeTest):
     def test_deleted_approved_story_is_detected_preserved_and_restorable(self):
         p = self.two_approved()
         original = self.approved_json(p, "US-002")
-        (p.root / "stories" / "approved" / "US-002.json").unlink()
-        (p.root / "stories" / "approved" / "US-002.md").unlink()
+        (p.root / "stories" / "approved" / "json" / "US-002.json").unlink()
+        (p.root / "stories" / "approved" / "md" / "US-002.md").unlink()
         rec = changes.check(p)["changes"][0]
         self.assertEqual(rec["subject"]["change_type"], "DELETED")
         cid = rec["change_id"]
@@ -485,7 +485,7 @@ class StoryChangeDetectionTests(ChangeTest):
 
     def test_confirming_a_story_removal_is_a_recorded_decision(self):
         p = self.two_approved()
-        (p.root / "stories" / "approved" / "US-002.json").unlink()
+        (p.root / "stories" / "approved" / "json" / "US-002.json").unlink()
         cid = changes.check(p)["changes"][0]["change_id"]
         changes.apply(p, cid, *PO, "Seen.")
         changes.dismiss(p, cid, "story_removal:US-002", "Out of scope for release 1.", *PO)
@@ -505,14 +505,14 @@ class StoryChangeDetectionTests(ChangeTest):
         out = changes.revert_edit(p, "US-001", "The old title was right.", *PO)
         self.assertEqual(out["approved_version_in_force"], 1)
         self.assertEqual(self.approved_json(p)["title"], "Register as a member")
-        self.assertFalse(list((p.root / "stories" / "candidates").glob("US-001*")))
+        self.assertFalse(list((p.root / "stories" / "candidates").rglob("US-001*")))
         self.assertEqual(json.loads((p.root / out["discarded_copy"]).read_text(encoding="utf-8"))["title"], "Register with email")
         self.assertEqual(changes.get(p, cid)["status"], "RECONCILED")
         self.assertEqual(len(self.events(p, "STORY_EDIT_REVERTED")), 1)
 
     def test_user_putting_the_file_back_reverts_an_unapplied_detection(self):
         p = self.two_approved()
-        path = p.root / "stories" / "approved" / "US-001.json"
+        path = p.root / "stories" / "approved" / "json" / "US-001.json"
         original = path.read_bytes()
         s = self.approved_json(p)
         s["title"] = "Something else entirely"
@@ -551,7 +551,7 @@ class StoryChangeDetectionTests(ChangeTest):
         self.assertEqual((after["version"], after["status"], after["approval"]), (1, "APPROVED", before["approval"]))
         rec = changes.records(p)[-1]
         self.assertEqual((rec["origin"], rec["classification"], rec["status"]), ("BA_AGENT", "FORMATTING_ONLY", "RECORDED"))
-        self.assertFalse(list((p.root / "stories" / "candidates").glob("US-001*")))
+        self.assertFalse(list((p.root / "stories" / "candidates").rglob("US-001*")))
         self.assertEqual(changes.check(p)["changes"], [])
         self.assertTrue(checks.validate_project(p)["ok"], checks.validate_project(p)["errors"])
 
@@ -559,12 +559,12 @@ class StoryChangeDetectionTests(ChangeTest):
         p = self.two_approved()
         s = self.approved_json(p, "US-002")
         s["story_id"], s["title"] = "US-009", "Smuggled in"
-        (p.root / "stories" / "approved" / "US-009.json").write_text(json.dumps(s), encoding="utf-8")
+        (p.root / "stories" / "approved" / "json" / "US-009.json").write_text(json.dumps(s), encoding="utf-8")
         rec = changes.check(p)["changes"][0]
         self.assertEqual(rec["subject"]["change_type"], "UNTRACKED_APPROVED")
         changes.apply(p, rec["change_id"], *PO, "apply")
-        self.assertFalse((p.root / "stories" / "approved" / "US-009.json").exists())
-        cand = json.loads((p.root / "stories" / "candidates" / "US-009.json").read_text(encoding="utf-8"))
+        self.assertFalse((p.root / "stories" / "approved" / "json" / "US-009.json").exists())
+        cand = json.loads((p.root / "stories" / "candidates" / "json" / "US-009.json").read_text(encoding="utf-8"))
         self.assertEqual((cand["status"], cand["approval"]), ("CANDIDATE", None))
 
     def test_legacy_approved_stories_are_adopted_not_flagged(self):

@@ -64,10 +64,10 @@ class UnapprovedStoryTests(BATest):
         p = self.to_stories()
         stories.next_story(p)
         out = stories.request_changes(p, "US-001", 1, "criteria too vague")
-        self.assertEqual(out["location"], "stories/unapproved/US-001.md")
-        self.assertTrue(p.exists("stories/unapproved/US-001.json") and p.exists("stories/unapproved/US-001.md"))
-        self.assertFalse(p.exists("stories/candidates/US-001.json"))
-        self.assertFalse(p.exists("stories/approved/US-001.json"))
+        self.assertEqual(out["location"], "stories/unapproved/md/US-001.md")
+        self.assertTrue(p.exists("stories/unapproved/json/US-001.json") and p.exists("stories/unapproved/md/US-001.md"))
+        self.assertFalse(p.exists("stories/candidates/json/US-001.json"))
+        self.assertFalse(p.exists("stories/approved/json/US-001.json"))
         self.assertEqual(code_of(stories.approve, p, "US-001", 1, "approve"), "STORY_UNAPPROVED")
         self.assertIn("US-001", p.state["pending_story_ids"])
         self.assertEqual(checks.validate_project(p)["errors"], [])
@@ -80,9 +80,9 @@ class UnapprovedStoryTests(BATest):
         stories.request_changes(p, "US-001", 1, "reword")
         out = stories.edit(p, "US-001", {"title": "Reworded story title"}, "reword")
         self.assertEqual(out["new_version"], 2)
-        self.assertFalse(p.exists("stories/unapproved/US-001.json"))
-        self.assertTrue(p.exists("stories/candidates/US-001.json"))
-        self.assertTrue(p.exists("stories/archive/US-001.v1.json"))
+        self.assertFalse(p.exists("stories/unapproved/json/US-001.json"))
+        self.assertTrue(p.exists("stories/candidates/json/US-001.json"))
+        self.assertTrue(p.exists("stories/archive/json/US-001.v1.json"))
 
 
     def test_legacy_changes_requested_story_is_migrated_on_open(self):
@@ -92,8 +92,8 @@ class UnapprovedStoryTests(BATest):
         for ext in ("json", "md"):  # simulate a 1.0.0 project
             p.path(f"stories/unapproved/US-001.{ext}").replace(p.path(f"stories/candidates/US-001.{ext}"))
         q = projmod.Project.open(p.root)
-        self.assertTrue(q.exists("stories/unapproved/US-001.json"))
-        self.assertFalse(q.exists("stories/candidates/US-001.json"))
+        self.assertTrue(q.exists("stories/unapproved/json/US-001.json"))
+        self.assertFalse(q.exists("stories/candidates/json/US-001.json"))
 
 
 class DecisionOwnerTests(BATest):
@@ -288,7 +288,7 @@ class ConflictTests(BATest):
         self.assertTrue(p.baseline_manifest()["stale"])
         self.assertFalse(p.state["gap_analysis_complete"])
         self.assertIn(p.state["stage"], ("GAP_ANALYSIS", "WAITING_FOR_GAP_INPUT"))
-        approved = p.read_json("stories/approved/US-003.json")
+        approved = p.read_json("stories/approved/json/US-003.json")
         self.assertTrue(approved["impact_review"]["pending"], "approved story linked to the changed requirement must be flagged")
         self.assertEqual(code_of(stories.approve, p, "US-002", 1, "approve"), "BASELINE_STALE")
         self.assertIn("US-003", checks.status_report(p)["stories"]["flagged_for_impact_review"])

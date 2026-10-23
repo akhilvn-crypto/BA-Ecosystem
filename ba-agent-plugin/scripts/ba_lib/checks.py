@@ -293,7 +293,7 @@ def recover(p) -> dict:
     actions = gapmod.recover_journals(p)
     out = {"closures_rolled_forward": actions, "approvals_repaired": [], "gaps_reopened": [], "audit_backfilled": []}
     events = p.audit_events()
-    for sid_path in sorted(p.path("stories/approved").glob("US-*.json")):
+    for sid_path in p.files("stories/approved", "US-*.json"):
         a = json.loads(sid_path.read_text(encoding="utf-8"))
         cand = p.path(f"stories/candidates/{a['story_id']}.json")
         if cand.exists() and json.loads(cand.read_text(encoding="utf-8"))["version"] == a["version"]:

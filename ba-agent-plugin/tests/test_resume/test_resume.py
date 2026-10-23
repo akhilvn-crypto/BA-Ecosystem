@@ -2,7 +2,7 @@
 import json
 import unittest
 
-from tests.helpers import BATest, basemod, checks, gapmod, projmod, reqs, stories, util
+from tests.helpers import BATest, basemod, checks, gapmod, projmod, reqs, stories, util, flatten_to_legacy
 from ba_lib.project import Project
 from ba_lib.util import BAError
 
@@ -134,7 +134,7 @@ class CrashRecoveryTests(BATest):
         out = checks.recover(p)
         self.assertEqual(out["approvals_repaired"], ["US-001"])
         self.assertEqual(out["audit_backfilled"], ["US-001"])
-        self.assertFalse((p.root / "stories/candidates/US-001.json").exists())
+        self.assertFalse((p.root / "stories/candidates/json/US-001.json").exists())
         self.assertTrue(checks.validate_project(p)["ok"], checks.validate_project(p)["errors"])
 
 
@@ -248,17 +248,22 @@ class AtomicRequirementsFolderTests(BATest):
         p = self.new_project()
         reqs.add_requirements(p, self.req_items(p))
         out = reqs.commit_requirements(p)
-        self.assertTrue((p.root / "atomic-requirements" / "REQ-001.md").exists())
+        self.assertTrue((p.root / "atomic-requirements" / "md" / "REQ-001.md").exists())
         self.assertFalse((p.root / "requirements").exists())
         self.assertEqual(out["saved_to"], str(p.root / "atomic-requirements"))
-        self.assertGreater(out["files_on_disk"], 0)
+        self.assertGreater(out["files_on_disk"]["md"], 0)
+        self.assertEqual(out["files_on_disk"]["md"], out["files_on_disk"]["json"])
+        self.assertEqual(out["readable_folder"], str(p.root / "atomic-requirements" / "md"))
+        self.assertEqual(out["json_folder"], str(p.root / "atomic-requirements" / "json"))
 
     def test_legacy_requirements_folder_is_migrated_on_open(self):
         p = self.new_project()
         reqs.add_requirements(p, self.req_items(p))
+        flatten_to_legacy(p.root)
         (p.root / "atomic-requirements").rename(p.root / "requirements")
         p2 = Project.open(p.root)
-        self.assertTrue((p.root / "atomic-requirements" / "REQ-001.json").exists())
+        self.assertTrue((p.root / "atomic-requirements" / "json" / "REQ-001.json").exists())
+        self.assertTrue((p.root / "atomic-requirements" / "md" / "REQ-001.md").exists())
         self.assertFalse((p.root / "requirements").exists())
         self.assertEqual(len(p2.requirements()), len(self.req_items(p)))
 
@@ -301,8 +306,8 @@ class SourceChangeTests(BATest):
         self.assertTrue(p.state["impact_review"]["pending"])
         self.assertTrue(p.baseline_manifest()["stale"])
         self.assertFalse(p.state["gap_analysis_complete"])
-        self.assertTrue(p.read_json("stories/approved/US-003.json")["impact_review"]["pending"])
-        self.assertEqual(p.read_json("stories/approved/US-003.json")["version"], 1, "approved story history untouched")
+        self.assertTrue(p.read_json("stories/approved/json/US-003.json")["impact_review"]["pending"])
+        self.assertEqual(p.read_json("stories/approved/json/US-003.json")["version"], 1, "approved story history untouched")
         self.assertEqual(code_of(stories.approve, p, "US-001", 1, "ok"), "IMPACT_REVIEW_PENDING")
         self.assertEqual(code_of(basemod.create, p), "IMPACT_REVIEW_PENDING")
         self.assertEqual(code_of(reqs.source_accept, p, "Priya Nair", "Product Owner", "accept"), "IMPACT_REVIEW_INCOMPLETE")
@@ -339,7 +344,7 @@ class SourceChangeTests(BATest):
         reqs.remove_requirement(p, "REQ-007", "Dropped from BRD", "Priya Nair", "Product Owner")
         reqs.source_accept(p, "Priya Nair", "Product Owner", "ok")
         self.assertEqual(p.requirement("REQ-007")["status"], "REMOVED")
-        self.assertTrue(p.exists("atomic-requirements/REQ-007.md"), "removed requirements are retained, never deleted")
+        self.assertTrue(p.exists("atomic-requirements/md/REQ-007.md"), "removed requirements are retained, never deleted")
 
 
 if __name__ == "__main__":

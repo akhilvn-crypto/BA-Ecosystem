@@ -245,10 +245,11 @@ def commit_requirements(p) -> dict:
     if p.state["stage"] == "BRD_PARSED":
         p.audit("REQUIREMENTS_COMMITTED", count=len(active))
         p.set_stage("REQUIREMENTS_READY", "atomic-requirements-saved")
-    folder = p.path(REQ_DIR)
-    files = sorted(x.name for x in folder.glob("REQ-*") if x.suffix in (".md", ".json"))
-    return {"requirements": len(active), "stage": p.state["stage"], "saved_to": str(folder), "files_on_disk": len(files),
-            "note": "Tell the user this exact folder path and that each requirement is saved as REQ-nnn.md (readable) and REQ-nnn.json."}
+    md, js = p.files(REQ_DIR, "REQ-*.md"), p.files(REQ_DIR, "REQ-*.json")
+    return {"requirements": len(active), "stage": p.state["stage"], "saved_to": str(p.path(REQ_DIR)),
+            "readable_folder": str(p.path(REQ_DIR) / "md"), "json_folder": str(p.path(REQ_DIR) / "json"),
+            "files_on_disk": {"md": len(md), "json": len(js)},
+            "note": "Tell the user these exact folder paths: each requirement is saved as REQ-nnn.md in md/ (readable) and REQ-nnn.json in json/."}
 
 
 def pairs_report(p) -> dict:

@@ -5,7 +5,7 @@ import copy
 import re
 
 from . import conflicts, gaps as gapmod, storytrack
-from .project import STORY_TRANSITIONS, check_transition, fault
+from .project import STORY_TRANSITIONS, check_transition, fault, physical
 from .util import BAError, ist_now_iso, normalize_ws, require_identity
 
 GWT = re.compile(r"\bgiven\b.+\bwhen\b.+\bthen\b", re.I | re.S)
@@ -251,7 +251,7 @@ def triage(p) -> dict:
         last = next((h for h in reversed(s["review_history"]) if h["action"] in ("CHANGES_REQUESTED", "DEFERRED")), None)
         rows.append({
             "story_id": s["story_id"], "version": s["version"], "title": s["title"], "status": s["status"], "bucket": bucket,
-            "location": f"stories/{bucket}/{s['story_id']}.md", "readiness": s.get("readiness"),
+            "location": physical(f"stories/{bucket}/{s['story_id']}.md"), "readiness": s.get("readiness"),
             "requirement_ids": s["requirement_ids"], "open_gap_ids": _derived(p, s["requirement_ids"])["open_gap_ids"],
             "deferral": s.get("deferral") if s["status"] == "DEFERRED" else None, "last_review_note": last and {"action": last["action"], "note": last.get("note"),
                                                                        "at_ist": last["at_ist"]},
@@ -309,7 +309,8 @@ def request_changes(p, sid: str, version: int, note: str) -> dict:
     p.remove_story_files("candidates", sid)
     p.audit("STORY_CHANGES_REQUESTED", story_id=sid, version=version, note=note)
     p.save_state(f"story-{sid}-unapproved")
-    return {"story_id": sid, "status": s["status"], "location": f"stories/unapproved/{sid}.md"}
+    return {"story_id": sid, "status": s["status"], "location": physical(f"stories/unapproved/{sid}.md"),
+            "saved_to": str(p.path(f"stories/unapproved/{sid}.md"))}
 
 
 def approve(p, sid: str, version: int, statement: str, approver_name: str | None = None, approver_role: str | None = None) -> dict:
@@ -365,7 +366,8 @@ def approve(p, sid: str, version: int, statement: str, approver_name: str | None
     p.save_state(f"story-{sid}-approved")
     return {"story_id": sid, "version": version, "status": "APPROVED", "approved_at_ist": now,
             "readiness": s.get("readiness"), "open_gap_ids": s["open_gap_ids"],
-            "superseded_version": prev["version"] if prev else None, "location": f"stories/approved/{sid}.md"}
+            "superseded_version": prev["version"] if prev else None, "location": physical(f"stories/approved/{sid}.md"),
+            "saved_to": str(p.path(f"stories/approved/{sid}.md"))}
 
 
 def edit(p, sid: str, changes: dict, reason: str) -> dict:
@@ -472,8 +474,8 @@ def revisit(p, sid: str) -> dict:
 def keep(p, sid: str) -> dict:
     """Triage: leave a not-yet-approved story exactly as it is (it stays available for later review); only the decision is audited."""
     bucket, s = _load(p, sid, PENDING_BUCKETS)
-    p.audit("STORY_TRIAGE_KEPT", story_id=sid, version=s["version"], status=s["status"], location=f"stories/{bucket}/{sid}.md")
-    return {"story_id": sid, "version": s["version"], "status": s["status"], "location": f"stories/{bucket}/{sid}.md",
+    p.audit("STORY_TRIAGE_KEPT", story_id=sid, version=s["version"], status=s["status"], location=physical(f"stories/{bucket}/{sid}.md"))
+    return {"story_id": sid, "version": s["version"], "status": s["status"], "location": physical(f"stories/{bucket}/{sid}.md"),
             "note": "Left as it is; it stays available for later review. Nothing was approved."}
 
 

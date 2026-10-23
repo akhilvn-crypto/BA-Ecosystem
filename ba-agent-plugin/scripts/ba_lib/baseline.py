@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from . import gaps as gapmod, ingest
+from .project import physical
 from .util import BAError, canonical_json, human_ist, ist_now_iso, normalize_ws, require_identity, sha256_text
 
 ACTIVE = ("ACTIVE",)
@@ -81,7 +82,7 @@ def create(p, summary: str | None = None) -> dict:
     p.write_json(f"baselines/baseline-v{version}.json", doc)
     p.write_text(f"baselines/baseline-v{version}.md", _markdown(doc), backup=False)
     m["versions"].append({"version": version, "status": "PROPOSED", "created_at": now, "inputs_hash": h,
-                          "file": f"baselines/baseline-v{version}.md", "change_summary": doc["change_summary"],
+                          "file": physical(f"baselines/baseline-v{version}.md"), "change_summary": doc["change_summary"],
                           "ready": sum(1 for e in entries if e["baseline_status"] == "READY"),
                           "blocked": sum(1 for e in entries if e["baseline_status"] == "BLOCKED")})
     m["stale"], m["stale_reason"] = False, None

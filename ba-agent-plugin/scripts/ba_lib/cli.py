@@ -72,6 +72,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("validate")
     t = sub.add_parser("trace"); t.add_argument("--write", action="store_true")
     sub.add_parser("recover")
+    sub.add_parser("files")
     sub.add_parser("complete")
     sub.add_parser("report")
     f = sub.add_parser("fingerprint"); f.add_argument("file")
@@ -148,12 +149,18 @@ def _open(a) -> Project:
     return Project.open(root)
 
 
+# Actions that only read; every other command may have written files and so reports where they now are.
+READ_ONLY = {"show", "list", "pairs", "outline", "history", "triage", "next", "gaps", "check", "status", "explain"}
+
+
 def run(a) -> dict | str:
     p, out = _run(a)
     if p is not None and a.group not in ("status", "validate", "trace"):
         done = changemod.reconcile(p)  # close change items whose underlying work is now complete
         if done and isinstance(out, dict):
             out["changes_reconciled"] = done
+    if p is not None and isinstance(out, dict) and a.group not in ("status", "validate", "trace", "files")             and getattr(a, "action", None) not in READ_ONLY:
+        out["files_saved"] = p.receipt()  # proof of what is on disk and where to open it; relay these folders to the user
     return out
 
 
@@ -200,6 +207,9 @@ def _dispatch(a, p, g, act):
         return checks.traceability(p, a.write)
     if g == "recover":
         return checks.recover(p)
+    if g == "files":
+        return {"project_folder": str(p.root), "stage": p.state["stage"], "folders": p.receipt(),
+                "note": "Each folder keeps readable copies in md/ and machine records in json/. Tell the user these paths."}
     if g == "complete":
         r = checks.complete_workflow(p)
         r.pop("summary", None)

@@ -41,4 +41,6 @@ A requirement can be `READY` while a MEDIUM/LOW gap on it is still open because 
 
 Before presenting: `validate`, `trace` (coverage: every READY requirement should end up with a story; list `uncovered_by_any_story`), then a brief semantic self-review (unsupported assumptions, ambiguity, consistency). For large sets the optional `ba-agent:story-builder` and `ba-agent:quality-reviewer` agents can draft and independently review; you still run `story add`.
 
+**Where they are saved:** `story add` writes each candidate to `<project>/stories/candidates/md/US-nnn.md` (readable) and `…/candidates/json/US-nnn.json`. Take the folders and counts from `files_saved`, check the `md/` folder with your own file tools, and tell the user the full path and how many stories are waiting there before review starts (`../ba-workflow/references/save-checkpoint.md`).
+
 Next: `story-review`.

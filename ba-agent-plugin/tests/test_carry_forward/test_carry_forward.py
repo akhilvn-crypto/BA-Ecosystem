@@ -133,7 +133,7 @@ class CarryForwardStateTests(Base):
         self.assertIn("still OPEN", out["note"])
         self.assertIn("GAP-002", p.state["pending_gap_ids"], "still outstanding")
         self.assertEqual(checks.status_report(p)["gaps"]["carried_forward"], ["GAP-002"])
-        self.assertIn("CARRIED FORWARD", (p.root / "gaps/GAP-002.md").read_text(encoding="utf-8"))
+        self.assertIn("CARRIED FORWARD", (p.root / "gaps/md/GAP-002.md").read_text(encoding="utf-8"))
         self.assertTrue(checks.validate_project(p)["ok"])
 
     def test_carried_gap_no_longer_blocks_but_an_uncarried_medium_gap_still_does(self):
@@ -305,11 +305,11 @@ class SuggestedAnswerAndOtherTests(Base):
 class BaselineTests(Base):
     def test_baseline_marks_requirement_ready_with_its_open_gaps_and_flags_the_gap_as_carried(self):
         p = self.carried_baseline(approve=False)
-        doc = p.read_json("baselines/baseline-v1.json")
+        doc = p.read_json("baselines/json/baseline-v1.json")
         e = next(x for x in doc["requirements"] if x["requirement_id"] == "REQ-008")
         self.assertEqual((e["baseline_status"], e["open_gap_ids"], e["blocked_by_gap_ids"]), ("READY", ["GAP-002"], []))
         self.assertTrue(doc["outstanding_gaps"][0]["carried_forward"])
-        md = (p.root / "baselines/baseline-v1.md").read_text(encoding="utf-8")
+        md = (p.root / "baselines/md/baseline-v1.md").read_text(encoding="utf-8")
         self.assertIn("READY with open gaps GAP-002", md)
         self.assertIn("CARRIED FORWARD", md)
 
@@ -319,7 +319,7 @@ class BaselineTests(Base):
         self.answer_and_resolve(p, "GAP-003", "Reject.", "Reject the 6th borrow.")
         gapmod.commit_analysis(p, True)
         basemod.create(p)
-        e = next(x for x in p.read_json("baselines/baseline-v1.json")["requirements"] if x["requirement_id"] == "REQ-008")
+        e = next(x for x in p.read_json("baselines/json/baseline-v1.json")["requirements"] if x["requirement_id"] == "REQ-008")
         self.assertEqual((e["baseline_status"], e["blocked_by_gap_ids"]), ("BLOCKED", ["GAP-002"]))
 
     def test_carrying_forward_after_a_baseline_makes_it_stale_and_changes_the_baseline_inputs(self):
@@ -361,12 +361,12 @@ class StoryTests(Base):
         p = self.carried_baseline()
         out = stories.add_stories(p, [self.speed_story()])
         self.assertEqual((out["needs_clarification"], out["not_ready"]), (["US-001"], []))
-        s = p.read_json("stories/candidates/US-001.json")
+        s = p.read_json("stories/candidates/json/US-001.json")
         self.assertEqual((s["open_gap_ids"], s["readiness"]), (["GAP-002"], "NEEDS_CLARIFICATION"))
         u = s["unresolved_decisions"][0]
         self.assertEqual((u["gap_id"], u["priority"], u["carried_forward"]), ("GAP-002", "MEDIUM", True))
         self.assertIn("page-load target", u["potential_impact"])
-        md = (p.root / "stories/candidates/US-001.md").read_text(encoding="utf-8")
+        md = (p.root / "stories/candidates/md/US-001.md").read_text(encoding="utf-8")
         self.assertIn("NEEDS CLARIFICATION", md)
         self.assertIn("GAP-002", md)
         self.assertIn("NOT an approved decision", md)
@@ -379,9 +379,9 @@ class StoryTests(Base):
                    interim_assumption="Assume 3 seconds for estimation only")]
         out = stories.add_stories(p, [self.speed_story(unresolved_decisions=ud)])
         self.assertEqual(out["not_ready"], ["US-001"])
-        s = p.read_json("stories/candidates/US-001.json")
+        s = p.read_json("stories/candidates/json/US-001.json")
         self.assertEqual((s["readiness"], s["decision_ids"]), ("NOT_READY", []), "an assumption is not a decision")
-        md = (p.root / "stories/candidates/US-001.md").read_text(encoding="utf-8")
+        md = (p.root / "stories/candidates/md/US-001.md").read_text(encoding="utf-8")
         self.assertIn("NOT READY FOR DEVELOPMENT", md)
         self.assertIn("Working assumption (NOT approved, to be confirmed): Assume 3 seconds for estimation only", md)
         self.assertEqual(s["assumptions"], [], "interim assumptions do not leak into approved assumptions")
@@ -389,9 +389,9 @@ class StoryTests(Base):
     def test_story_without_open_gaps_is_ready_for_development(self):
         p = self.carried_baseline()
         stories.add_stories(p, [self.story_item("Register as a member", ("REQ-001",))])
-        s = p.read_json("stories/candidates/US-001.json")
+        s = p.read_json("stories/candidates/json/US-001.json")
         self.assertEqual((s["readiness"], s["unresolved_decisions"], s["open_gap_ids"]), ("READY_FOR_DEVELOPMENT", [], []))
-        self.assertIn("Ready for development", (p.root / "stories/candidates/US-001.md").read_text(encoding="utf-8"))
+        self.assertIn("Ready for development", (p.root / "stories/candidates/md/US-001.md").read_text(encoding="utf-8"))
 
     def test_blocking_gaps_still_block_story_creation(self):
         p = self.presented()
@@ -424,7 +424,7 @@ class StoryTests(Base):
         stories.next_story(p)
         out = stories.approve(p, "US-001", 1, "Approved with the open gap understood.", *OWNER)
         self.assertEqual((out["readiness"], out["open_gap_ids"]), ("NEEDS_CLARIFICATION", ["GAP-002"]))
-        s = p.read_json("stories/approved/US-001.json")
+        s = p.read_json("stories/approved/json/US-001.json")
         self.assertEqual((s["readiness"], s["open_gap_ids"]), ("NEEDS_CLARIFICATION", ["GAP-002"]))
 
     def test_approval_refused_if_a_new_open_gap_appeared_after_the_story_was_written(self):
@@ -432,7 +432,7 @@ class StoryTests(Base):
         stories.add_stories(p, [self.speed_story()])
         gapmod.add_gaps(p, [dict(self.gap_items()[1], title="Mobile image sizes", question="What image size limits apply on mobile?",
                                  impacted_requirement_ids=["REQ-008"], priority="LOW", priority_rationale="Minor", material=False)])
-        self.assertTrue(p.read_json("stories/candidates/US-001.json")["impact_review"]["pending"])
+        self.assertTrue(p.read_json("stories/candidates/json/US-001.json")["impact_review"]["pending"])
         self.assertEqual(code_of(stories.approve, p, "US-001", 1, "ok", *OWNER), "IMPACT_REVIEW_PENDING")
         self.carry(p, "GAP-004", reason="Design to supply")  # otherwise the new gap blocks REQ-008 altogether
         self.refresh_baseline(p)
@@ -457,7 +457,7 @@ class RevisitAndUpdateTests(Base):
         out = self._resolve_carried(p)
         self.assertEqual((out["was_carried_forward"], out["stories_to_update"]), (True, ["US-001"]))
         self.assertIn("story edit", out["next"])
-        s1, s2 = p.read_json("stories/approved/US-001.json"), p.read_json("stories/approved/US-002.json")
+        s1, s2 = p.read_json("stories/approved/json/US-001.json"), p.read_json("stories/approved/json/US-002.json")
         self.assertTrue(s1["impact_review"]["pending"])
         self.assertIn("GAP-002 resolved", s1["impact_review"]["reason"])
         self.assertIsNone(s2["impact_review"])
@@ -488,13 +488,13 @@ class RevisitAndUpdateTests(Base):
         self.assertEqual((out["new_version"], out["status"], out["readiness"], out["open_gap_ids"]),
                          (2, "CANDIDATE", "READY_FOR_DEVELOPMENT", []))
         self.assertTrue(out["approved_version_still_in_force"])
-        self.assertEqual(p.read_json("stories/approved/US-001.json")["version"], 1, "approved v1 untouched until v2 is approved")
-        self.assertEqual(p.read_json("stories/candidates/US-001.json")["decision_ids"], ["DEC-003"])
+        self.assertEqual(p.read_json("stories/approved/json/US-001.json")["version"], 1, "approved v1 untouched until v2 is approved")
+        self.assertEqual(p.read_json("stories/candidates/json/US-001.json")["decision_ids"], ["DEC-003"])
         self.assertEqual(code_of(stories.approve, p, "US-001", 2, ""), "APPROVAL_EVIDENCE_REQUIRED")
         stories.approve(p, "US-001", 2, "Approved after GAP-002 was resolved.", *OWNER)
-        s = p.read_json("stories/approved/US-001.json")
+        s = p.read_json("stories/approved/json/US-001.json")
         self.assertEqual((s["version"], s["readiness"], s["open_gap_ids"]), (2, "READY_FOR_DEVELOPMENT", []))
-        self.assertTrue(p.exists("stories/archive/US-001.v1.json"), "v1 kept in the archive")
+        self.assertTrue(p.exists("stories/archive/json/US-001.v1.json"), "v1 kept in the archive")
         self.assertEqual(self.audit(p, "STORY_APPROVED")[-1]["version"], 2)
 
     def test_editing_a_story_to_cover_a_gap_requires_declaring_it(self):
@@ -518,7 +518,7 @@ class RevisitAndUpdateTests(Base):
         ud = [dict(gap_id="GAP-002", readiness_effect="NOT_READY", potential_impact="No test threshold without the target."),
               dict(gap_id="GAP-004", readiness_effect="NEEDS_CLARIFICATION", potential_impact="Image budget may change page weight.")]
         stories.add_stories(p, [self.speed_story(unresolved_decisions=ud)])
-        self.assertEqual(p.read_json("stories/candidates/US-001.json")["readiness"], "NOT_READY")
+        self.assertEqual(p.read_json("stories/candidates/json/US-001.json")["readiness"], "NOT_READY")
         self.assertTrue(any("not ready for development" in r and "US-001" in r for r in checks.completion(p)["reasons"]))
         gapmod.next_gaps(p, 1, carried=True)  # GAP-002 (MEDIUM) before GAP-004 (LOW)
         self.answer_and_resolve(p, "GAP-002", "Under 3 seconds.", "Target is 3 seconds.")
@@ -578,7 +578,7 @@ class VisibilityTests(Base):
         comp = checks.completion(p)
         self.assertTrue(any(r.startswith("requirements") for r in comp["reasons"]))  # other requirements have no stories yet
         self.assertFalse(any("not ready" in r for r in comp["reasons"]))
-        s = p.read_json("stories/approved/US-001.json")
+        s = p.read_json("stories/approved/json/US-001.json")
         s["unresolved_decisions"][0]["readiness_effect"] = "NOT_READY"
         s["readiness"] = "NOT_READY"
         p.save_story("approved", s)
@@ -587,7 +587,7 @@ class VisibilityTests(Base):
     def test_validate_flags_inconsistent_readiness_and_unknown_gap_links(self):
         p = self.carried_baseline()
         stories.add_stories(p, [self.speed_story()])
-        s = p.read_json("stories/candidates/US-001.json")
+        s = p.read_json("stories/candidates/json/US-001.json")
         s["readiness"] = "READY_FOR_DEVELOPMENT"
         p.save_story("candidates", s)
         self.assertTrue(any("readiness" in e for e in checks.validate_project(p)["errors"]))

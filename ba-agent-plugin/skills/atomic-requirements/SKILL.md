@@ -27,7 +27,7 @@ For each requirement produce (a JSON list, saved to `<project>/state/inbox/reqs.
 
 Then: `req add --file …` (IDs `REQ-001…` are assigned for you) → `req pairs` (cross-check candidates) → `req commit` (validates schema, IDs, source references; stage → `REQUIREMENTS_READY`).
 
-**Where they are saved:** the core writes every requirement to `<project>/atomic-requirements/REQ-nnn.md` (readable) and `.json` (authoritative). Never write requirement files yourself. After `req commit`, use its `saved_to` and `files_on_disk` values, confirm the folder exists by listing it with your own file tools, and tell the user the full folder path. If the folder is empty or missing, say so plainly and stop — do not claim the requirements were saved.
+**Where they are saved:** the core writes every requirement straight into the confirmed project folder: readable copies to `<project>/atomic-requirements/md/REQ-nnn.md` and the authoritative records to `<project>/atomic-requirements/json/REQ-nnn.json`. Nothing needs copying, and you never write requirement files yourself. After `req commit`, take `readable_folder`, `json_folder` and `files_on_disk` from its result, list the `md/` folder with your own file tools to confirm the files are really there, and give the user both full folder paths so they can open them. If a folder is empty or missing, say so plainly and stop — do not claim the requirements were saved. Follow `../ba-workflow/references/save-checkpoint.md`.
 
 Tell the user how many requirements were created and anything flagged. For large BRDs you may delegate a section range to the optional `ba-agent:requirement-analyst` agent (it writes a JSON file and returns a short summary — you still run `req add`).
 

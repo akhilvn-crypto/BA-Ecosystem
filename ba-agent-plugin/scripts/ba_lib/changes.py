@@ -21,6 +21,7 @@ import re
 from pathlib import Path
 
 from . import ingest, render, reqs as reqmod, snapshots, storytrack as tr
+from .project import physical
 from .util import (BAError, atomic_write_bytes, ist_now_iso, normalize_ws, require_identity, sha256_bytes,
                    sha256_text)
 
@@ -41,7 +42,7 @@ def _clip(s: str, n: int = 240) -> str:
 
 def records(p, status: str | None = None) -> list[dict]:
     out = []
-    for f in sorted(p.path("changes").glob("CHG-*.json")):
+    for f in p.files("changes", "CHG-*.json"):
         out.append(p.read_json(f"changes/{f.name}"))
     return [r for r in out if not status or r["status"] == status]
 
@@ -310,7 +311,7 @@ def _assess_story(p, sid: str, events: list[dict] | None = None) -> tuple[dict |
 
 
 def detect_stories(p) -> tuple[list[tuple[dict, dict]], list[dict]]:
-    sids = sorted({f.stem for f in p.path("stories/approved").glob("US-*.json")} | set(tr.known_ids(p)))
+    sids = sorted({f.stem for f in p.files("stories/approved", "US-*.json")} | set(tr.known_ids(p)))
     events = p.audit_events()
     items, adopt = [], []
     for sid in sids:
@@ -930,13 +931,13 @@ def revert_edit(p, sid: str, reason: str, by_name: str, by_role: str) -> dict:
                 p.save_state(f"story-{sid}-edit-reverted")
                 reconcile(p)
                 return {"story_id": sid, "discarded_version": s["version"], "approved_version_in_force": appr["version"],
-                        "discarded_copy": f"stories/archive/{sid}.v{s['version']}.json"}
+                        "discarded_copy": physical(f"stories/archive/{sid}.v{s['version']}.json")}
     raise BAError("NOTHING_TO_REVERT", f"{sid} has no unapproved edited version.")
 
 
 def story_history(p, sid: str) -> dict:
     e = tr.entry(p, sid)
-    archived = [{"version": s["version"], "status": s["status"], "file": f"stories/archive/{sid}.v{s['version']}.json"}
+    archived = [{"version": s["version"], "status": s["status"], "file": physical(f"stories/archive/{sid}.v{s['version']}.json")}
                 for s in p.archived_stories() if s["story_id"] == sid]
     pending = [{"bucket": b, "version": s["version"], "status": s["status"], "supersedes_version": s.get("supersedes_version"),
                 "impact_review": s.get("impact_review")} for b, s in p.all_stories() if s["story_id"] == sid and b != "approved"]

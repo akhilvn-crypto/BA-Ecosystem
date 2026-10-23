@@ -39,12 +39,12 @@ class StoryGenerationTests(BATest):
         p = self.to_baseline()
         stories.add_stories(p, [self.story_item("Enforce borrow limit", ("REQ-003",),
                                acceptance_criteria=["Given a member with 5 loans, when borrowing a 6th, then it is rejected with a limit message."])])
-        s = p.read_json("stories/candidates/US-001.json")
+        s = p.read_json("stories/candidates/json/US-001.json")
         self.assertEqual(s["requirement_ids"], ["REQ-003"])
         self.assertTrue(s["decision_ids"], "linked to the decision that clarified REQ-003")
         self.assertIn("§", s["source_references"][0])
         self.assertEqual(s["status"], "CANDIDATE")
-        self.assertTrue((p.root / "stories/candidates/US-001.md").read_text(encoding="utf-8").startswith("## US-001:"))
+        self.assertTrue((p.root / "stories/candidates/md/US-001.md").read_text(encoding="utf-8").startswith("## US-001:"))
 
     def test_requirement_with_unresolved_high_gap_cannot_become_story(self):
         """Test 14 — strict policy blocks the affected requirement only."""
@@ -59,7 +59,7 @@ class StoryGenerationTests(BATest):
         out = basemod.create(p)
         self.assertEqual(out["blocked_requirements"], 1)
         basemod.confirm(p, 1, "Priya Nair", "Product Owner", "ok")
-        base = p.read_json("baselines/baseline-v1.json")
+        base = p.read_json("baselines/json/baseline-v1.json")
         blocked = [r for r in base["requirements"] if r["baseline_status"] == "BLOCKED"]
         self.assertEqual([r["requirement_id"] for r in blocked], ["REQ-006"])
         self.assertEqual(blocked[0]["blocked_by_gap_ids"], ["GAP-001"])
@@ -82,7 +82,7 @@ class StoryGenerationTests(BATest):
         gapmod.defer(p, "GAP-002", "later", by_name="Priya Nair", by_role="Product Owner")  # MEDIUM
         gapmod.commit_analysis(p, True)
         basemod.create(p)
-        base = p.read_json("baselines/baseline-v1.json")
+        base = p.read_json("baselines/json/baseline-v1.json")
         self.assertEqual([r["requirement_id"] for r in base["requirements"] if r["baseline_status"] == "BLOCKED"], ["REQ-008"],
                          "strict default: even MEDIUM unresolved gaps block until the carry-forward policy is accepted")
         self.assertEqual(code_of(gapmod.set_policy, p, True, "", "", "I accept"), "IDENTITY_REQUIRED")
@@ -90,7 +90,7 @@ class StoryGenerationTests(BATest):
         out = basemod.create(p, "policy accepted")
         self.assertFalse(out["reused"])
         self.assertEqual(out["version"], 2)
-        base2 = p.read_json("baselines/baseline-v2.json")
+        base2 = p.read_json("baselines/json/baseline-v2.json")
         self.assertTrue(all(r["baseline_status"] == "READY" for r in base2["requirements"]))
         self.assertTrue(any(g["gap_id"] == "GAP-002" for g in base2["outstanding_gaps"]), "carried-forward gap is clearly marked")
 
@@ -109,7 +109,7 @@ class StoryGenerationTests(BATest):
         gapmod.commit_analysis(p, True)
         out = basemod.create(p)
         self.assertEqual(out["version"], 2)
-        self.assertTrue(p.exists("baselines/baseline-v1.md") and p.exists("baselines/baseline-v2.md"))
+        self.assertTrue(p.exists("baselines/md/baseline-v1.md") and p.exists("baselines/md/baseline-v2.md"))
         self.assertEqual(p.baseline_manifest()["versions"][0]["status"], "APPROVED", "v1 stays approved until v2 is confirmed")
         basemod.confirm(p, 2, "Priya Nair", "Product Owner", "ok")
         self.assertEqual(p.baseline_manifest()["versions"][0]["status"], "SUPERSEDED")
@@ -119,18 +119,18 @@ class StoryGenerationTests(BATest):
 class StoryReviewTests(BATest):
     def test_approve_writes_only_approved_version(self):
         p = self.to_stories()
-        self.assertFalse(list((p.root / "stories/approved").glob("*")))
+        self.assertFalse(list((p.root / "stories/approved/md").glob("*")) + list((p.root / "stories/approved/json").glob("*")))
         out = stories.approve(p, "US-001", 1, "Looks good, approved.", "Priya Nair", "Product Owner")
         self.assertEqual(out["status"], "APPROVED")
-        self.assertTrue((p.root / "stories/approved/US-001.md").exists())
-        self.assertFalse((p.root / "stories/candidates/US-001.json").exists())
-        self.assertTrue((p.root / "stories/candidates/US-002.json").exists(), "unreviewed story must not be approved")
-        self.assertEqual([x.name for x in (p.root / "stories/approved").glob("*.json")], ["US-001.json"])
-        a = p.read_json("stories/approved/US-001.json")
+        self.assertTrue((p.root / "stories/approved/md/US-001.md").exists())
+        self.assertFalse((p.root / "stories/candidates/json/US-001.json").exists())
+        self.assertTrue((p.root / "stories/candidates/json/US-002.json").exists(), "unreviewed story must not be approved")
+        self.assertEqual([x.name for x in (p.root / "stories/approved/json").glob("*.json")], ["US-001.json"])
+        a = p.read_json("stories/approved/json/US-001.json")
         self.assertEqual(a["approval"]["version"], 1)
         self.assertEqual(a["approval"]["statement"], "Looks good, approved.")
         self.assertRegex(a["approval"]["at_ist"], r"\+05:30$")
-        self.assertIn("**Approved:** v1", (p.root / "stories/approved/US-001.md").read_text(encoding="utf-8"))
+        self.assertIn("**Approved:** v1", (p.root / "stories/approved/md/US-001.md").read_text(encoding="utf-8"))
         self.assertTrue(checks.validate_project(p)["ok"], checks.validate_project(p)["errors"])
 
     def test_presenting_a_story_never_approves_it(self):
@@ -138,7 +138,7 @@ class StoryReviewTests(BATest):
         out = stories.next_story(p)
         self.assertEqual(out["stories"][0]["status"], "IN_REVIEW")
         self.assertEqual(p.state["stage"], "WAITING_FOR_STORY_REVIEW")
-        self.assertFalse(list((p.root / "stories/approved").glob("*.json")))
+        self.assertFalse(list((p.root / "stories/approved/json").glob("*.json")))
 
     def test_edit_candidate_creates_new_version_requiring_approval(self):
         """Test 9."""
@@ -146,12 +146,12 @@ class StoryReviewTests(BATest):
         stories.next_story(p)
         out = stories.edit(p, "US-001", {"title": "Register a new member account"}, "Clearer title requested by reviewer")
         self.assertEqual(out["new_version"], 2)
-        s = p.read_json("stories/candidates/US-001.json")
+        s = p.read_json("stories/candidates/json/US-001.json")
         self.assertEqual((s["version"], s["status"], s["supersedes_version"]), (2, "CANDIDATE", 1))
-        self.assertTrue((p.root / "stories/archive/US-001.v1.json").exists())
+        self.assertTrue((p.root / "stories/archive/json/US-001.v1.json").exists())
         self.assertEqual(code_of(stories.approve, p, "US-001", 1, "approve"), "VERSION_MISMATCH", "old version cannot be approved")
         stories.approve(p, "US-001", 2, "Approved v2")
-        a = p.read_json("stories/approved/US-001.json")
+        a = p.read_json("stories/approved/json/US-001.json")
         self.assertEqual(a["version"], 2)
         self.assertIsNone(a["approval"]["approver_name"], "approver identity recorded only if provided")
 
@@ -164,13 +164,13 @@ class StoryReviewTests(BATest):
             "Given an existing email, when they register, then registration is refused."]}, "Add duplicate-email path")
         self.assertEqual(out["new_version"], 2)
         self.assertTrue(out["approved_version_still_in_force"])
-        self.assertEqual(p.read_json("stories/approved/US-001.json")["version"], 1, "v1 remains the approved version until v2 is approved")
-        self.assertEqual(p.read_json("stories/candidates/US-001.json")["status"], "CANDIDATE")
+        self.assertEqual(p.read_json("stories/approved/json/US-001.json")["version"], 1, "v1 remains the approved version until v2 is approved")
+        self.assertEqual(p.read_json("stories/candidates/json/US-001.json")["status"], "CANDIDATE")
         stories.approve(p, "US-001", 2, "approved v2", "Priya Nair", "Product Owner")
-        self.assertEqual(p.read_json("stories/approved/US-001.json")["version"], 2)
-        arch = p.read_json("stories/archive/US-001.v1.json")
+        self.assertEqual(p.read_json("stories/approved/json/US-001.json")["version"], 2)
+        arch = p.read_json("stories/archive/json/US-001.v1.json")
         self.assertEqual((arch["status"], arch["approval"]["version"]), ("SUPERSEDED", 1), "approved v1 preserved in history")
-        self.assertFalse((p.root / "stories/candidates/US-001.json").exists())
+        self.assertFalse((p.root / "stories/candidates/json/US-001.json").exists())
         events = [e for e in p.audit_events() if e["event_type"] in ("STORY_APPROVED", "STORY_EDITED")]
         self.assertEqual([e["event_type"] for e in events], ["STORY_APPROVED", "STORY_EDITED", "STORY_APPROVED"])
         self.assertTrue(checks.validate_project(p)["ok"], checks.validate_project(p)["errors"])
@@ -178,15 +178,15 @@ class StoryReviewTests(BATest):
     def test_defer_and_revisit(self):
         p = self.to_stories()
         stories.defer(p, "US-002", 1, "Needs design input")
-        self.assertTrue((p.root / "stories/deferred/US-002.json").exists())
-        self.assertFalse((p.root / "stories/candidates/US-002.json").exists())
-        self.assertFalse((p.root / "stories/approved/US-002.json").exists())
-        self.assertEqual(p.read_json("stories/deferred/US-002.json")["status"], "DEFERRED")
+        self.assertTrue((p.root / "stories/deferred/json/US-002.json").exists())
+        self.assertFalse((p.root / "stories/candidates/json/US-002.json").exists())
+        self.assertFalse((p.root / "stories/approved/json/US-002.json").exists())
+        self.assertEqual(p.read_json("stories/deferred/json/US-002.json")["status"], "DEFERRED")
         self.assertEqual(stories.next_story(p, deferred=True)["stories"][0]["story_id"], "US-002")
         stories.revisit(p, "US-002")
-        self.assertEqual(p.read_json("stories/candidates/US-002.json")["status"], "CANDIDATE")
+        self.assertEqual(p.read_json("stories/candidates/json/US-002.json")["status"], "CANDIDATE")
         stories.approve(p, "US-002", 1, "ok now")
-        self.assertTrue((p.root / "stories/approved/US-002.md").exists())
+        self.assertTrue((p.root / "stories/approved/md/US-002.md").exists())
 
     def test_duplicate_story_rejected(self):
         p = self.to_stories()
@@ -201,7 +201,7 @@ class StoryReviewTests(BATest):
                                  priority="LOW", priority_rationale="Minor", impacted_requirement_ids=["REQ-001"], material=False)])
         # the new gap flags the existing story (it must name the gap) and stales the baseline: approval is refused
         self.assertEqual(code_of(stories.approve, p, "US-001", 1, "ok"), "IMPACT_REVIEW_PENDING")
-        self.assertIn("GAP-004", p.read_json("stories/candidates/US-001.json")["impact_review"]["reason"])
+        self.assertIn("GAP-004", p.read_json("stories/candidates/json/US-001.json")["impact_review"]["reason"])
         self.assertTrue(p.baseline_manifest()["stale"])
 
 
@@ -243,7 +243,7 @@ class CoverageAndCompletionTests(BATest):
         """Test 15."""
         p = self.to_baseline()
         stories.add_stories(p, [self._story_for("REQ-001", 1)])
-        s = p.read_json("stories/candidates/US-001.json")
+        s = p.read_json("stories/candidates/json/US-001.json")
         orphan = dict(s, story_id="US-050", title="Orphan story", requirement_ids=["REQ-777"])
         dupe = dict(s, story_id="US-051", title=s["title"].upper())
         for rec in (orphan, dupe):
@@ -259,22 +259,22 @@ class CoverageAndCompletionTests(BATest):
     def test_validate_detects_tampering(self):
         p = self.to_baseline()
         self.assertTrue(checks.validate_project(p)["ok"])
-        gaps = p.read_json("gaps/gap-register.json")
+        gaps = p.read_json("gaps/json/gap-register.json")
         gaps["gaps"][0]["closed_by_name"] = None
-        p.write_json("gaps/gap-register.json", gaps)
+        p.write_json("gaps/json/gap-register.json", gaps)
         v = checks.validate_project(p)
         self.assertFalse(v["ok"])
         self.assertTrue(any("missing closure metadata" in e for e in v["errors"]))
 
     def test_resolved_without_audit_event_is_detected_and_repaired_by_recover(self):
         p = self.with_gaps()
-        gaps = p.read_json("gaps/gap-register.json")
+        gaps = p.read_json("gaps/json/gap-register.json")
         g = gaps["gaps"][0]
         g.update(status="RESOLVED", decision_id="DEC-001", resolution="x", decision_owner_name="A B", decision_owner_role="PO",
                  closed_by_name="A B", closed_by_role="PO", closed_at_ist="2026-10-22T18:45:00+05:30", closure_summary="x",
                  closure_validation={"status": "PASSED", "validated_at_ist": "2026-10-22T18:45:00+05:30"})
         g["history"].append({"from": "OPEN", "to": "RESOLVED", "at_ist": "2026-10-22T18:45:00+05:30"})
-        p.write_json("gaps/gap-register.json", gaps)
+        p.write_json("gaps/json/gap-register.json", gaps)
         v = checks.validate_project(p)
         self.assertFalse(v["ok"])
         out = checks.recover(p)

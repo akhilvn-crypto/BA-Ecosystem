@@ -3,9 +3,9 @@
 **Date:** 2026-10-22 (IST) · **Environment:** Windows 10 Pro 10.0.19045, Python 3.14.8, Claude Code CLI 2.1.308, Git Bash + PowerShell.
 **Not available / not run:** Claude Cowork, claude.ai chat, macOS/Linux, Python < 3.14 (see "Tests not run").
 
-## 1. Automated tests — 235 run, 234 passed, 1 skipped, 0 failed (re-run 2026-10-23 for 1.5.0)
+## 1. Automated tests — 244 run, 243 passed, 1 skipped, 0 failed (re-run 2026-10-23 for 1.6.0)
 
-Command (from the plugin folder): `python -m unittest discover -s tests -t . -v` → `Ran 235 tests in ~110s — OK (skipped=1)` (Python 3.14.8, Windows 10). The 183 tests that existed before 1.5.0 all still pass unchanged; the 52 new tests are in `test_change_detection/`. Per-file counts of older areas were last measured at the version noted in their row.
+Command (from the plugin folder): `python -m unittest discover -s tests -t . -v` → `Ran 244 tests in ~110s — OK (skipped=1)` (Python 3.14.8, Windows 10). The 235 tests that existed before 1.6.0 all still pass (only their file paths were updated for the `md/` + `json/` layout); the 9 new tests are in `test_layout/` (path mapping, populated `md/` and `json/` folders at every stage, saved-files receipt, migration of a flat project, no overwrite of a conflicting loose file, CLI `files_saved` and `files`). Per-file counts of older areas were last measured at the version noted in their row.
 
 | Area (file) | Tests | Covers |
 |---|---|---|

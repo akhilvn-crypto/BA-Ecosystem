@@ -7,6 +7,7 @@
 |---|---|
 | `init --brd FILE --root DIR [--name N] [--copy-source]` | Create project, fingerprint + outline the BRD (md/txt/docx). Stage → `BRD_PARSED`. `--copy-source` copies (never moves) the BRD into `source/`. |
 | `status [--json]` | Stage, counts, blockers, validation, **NEXT** action. |
+| `files` | Read-only: every artifact folder that has files, with the absolute `md/` and `json/` paths and file counts. Every writing command also returns the same as `files_saved`. |
 | `validate` · `trace [--write]` · `recover` · `complete` · `report` | Integrity checks · coverage/orphans/dupes · roll forward interrupted work · finish or report PARTIAL · write summary. |
 | `source section SID [--allow-changed]` · `source outline` | Fetch ONE section's text (context-efficient) / list sections. |
 | `changes check [--no-record]` (alias `source check`) | Compare the BRD with its accepted snapshot and every approved story with what was approved. Returns `changes` (records `CHG-nnn`: what changed, `classification` MATERIAL/FORMATTING_ONLY, `impact`, `required_actions`), `formatting_only_accepted`, `awaiting_reconciliation`, `warnings`. **Changes nothing downstream** except accepting formatting-only differences (recorded). Runs automatically before guarded commands. |

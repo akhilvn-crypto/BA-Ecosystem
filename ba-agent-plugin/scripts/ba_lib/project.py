@@ -59,10 +59,22 @@ STORY_TRANSITIONS = {
 REQ_DIR = "atomic-requirements"  # one folder the user can open; older projects used "requirements" (migrated on open)
 LEGACY_REQ_DIR = "requirements"
 
-DIRS = ["state", "state/backups", "state/pending", "extracted", REQ_DIR, "gaps", "decisions", "baselines",
-        "stories/candidates", "stories/approved", "stories/unapproved", "stories/deferred", "stories/archive", "reports",
-        "changes", "snapshots/brd", "snapshots/stories"]
+# Every user-facing artifact folder keeps its readable copies in `md/` and its machine records in `json/`.
+STORY_BUCKETS = ("candidates", "approved", "unapproved", "deferred", "archive")
+SPLIT_DIRS = ("extracted", REQ_DIR, "gaps", "decisions", "baselines", "changes") + tuple(f"stories/{b}" for b in STORY_BUCKETS)
+FORMAT_DIRS = {".md": "md", ".json": "json", ".jsonl": "json"}
+DIRS = ["state", "state/backups", "state/pending", "reports", "snapshots/brd", "snapshots/stories"] +        [f"{d}/{sub}" for d in SPLIT_DIRS for sub in ("md", "json")]
 UNRESOLVED_OK_STORY_BUCKETS = ("candidates", "approved", "unapproved", "deferred")
+
+
+def physical(rel: str) -> str:
+    """Map a logical artifact path (`stories/approved/US-001.md`) to where it lives on disk (`stories/approved/md/US-001.md`).
+
+    Only files directly inside a split folder move; folders, `state/`, `reports/` and `snapshots/` are returned unchanged."""
+    r = rel.replace("\\", "/").strip("/")
+    d, _, name = r.rpartition("/")
+    sub = FORMAT_DIRS.get(os.path.splitext(name)[1].lower()) if name else None
+    return f"{d}/{sub}/{name}" if d in SPLIT_DIRS and sub else r
 
 
 def slugify(s: str) -> str:
@@ -147,15 +159,42 @@ class Project:
         return p
 
     def _migrate_legacy_layout(self) -> None:
-        self._migrate_unapproved_stories()
         old, new = self.root / LEGACY_REQ_DIR, self.root / REQ_DIR
-        if old.is_dir() and not any(new.glob("REQ-*")) and any(old.glob("REQ-*")):
+        if old.is_dir() and not any(new.rglob("REQ-*")) and any(old.glob("REQ-*")):
             try:
                 if new.is_dir():
-                    new.rmdir()  # empty dir only; leave it alone if rmdir fails
+                    for sub in ("md", "json"):
+                        if (new / sub).is_dir():
+                            (new / sub).rmdir()  # empty scaffolding only; the guard above saw no REQ files
+                    new.rmdir()
                 old.rename(new)
             except OSError as e:
                 raise BAError("MIGRATION_FAILED", f"Could not rename {old} to {new}: {e}")
+        self._migrate_split_layout()
+        self._migrate_unapproved_stories()
+
+    def _migrate_split_layout(self) -> None:
+        """Before 1.6.0 `.md` and `.json` files shared one folder. Move them into `md/` and `json/` (idempotent)."""
+        for d in SPLIT_DIRS:
+            folder = self.root / d
+            if not folder.is_dir():
+                continue
+            for sub in ("md", "json"):
+                (folder / sub).mkdir(exist_ok=True)
+            for f in sorted(x for x in folder.iterdir() if x.is_file()):
+                sub = FORMAT_DIRS.get(f.suffix.lower())
+                if not sub:
+                    continue
+                dest = folder / sub / f.name
+                try:
+                    if dest.exists():
+                        if dest.read_bytes() != f.read_bytes():
+                            continue  # two different files: never overwrite either, leave the loose one for the user to see
+                        f.unlink()
+                    else:
+                        f.replace(dest)
+                except OSError as e:
+                    raise BAError("MIGRATION_FAILED", f"Could not move {f} to {dest}: {e}")
 
     def _migrate_unapproved_stories(self) -> None:
         """Before 1.1.0 'not approved' stories stayed in stories/candidates/ with status CHANGES_REQUESTED."""
@@ -163,21 +202,40 @@ class Project:
         if not cand.is_dir():
             return
         dest = self.root / "stories" / "unapproved"
-        for f in sorted(cand.glob("US-*.json")):
+        for f in sorted((cand / "json").glob("US-*.json")):
             try:
                 if json.loads(f.read_text(encoding="utf-8")).get("status") != "CHANGES_REQUESTED":
                     continue
-                dest.mkdir(parents=True, exist_ok=True)
                 for ext in ("json", "md"):
-                    src = cand / f"{f.stem}.{ext}"
+                    src = cand / ext / f"{f.stem}.{ext}"
                     if src.exists():
-                        src.replace(dest / src.name)
+                        (dest / ext).mkdir(parents=True, exist_ok=True)
+                        src.replace(dest / ext / src.name)
             except (OSError, ValueError) as e:
                 raise BAError("MIGRATION_FAILED", f"Could not move {f.name} to stories/unapproved/: {e}")
 
     # ----------------------------------------------------------------- paths / IO
     def path(self, rel: str) -> Path:
-        return safe_join(self.root, rel)
+        return safe_join(self.root, physical(rel))
+
+    def files(self, folder: str, pattern: str) -> list[Path]:
+        """Files of a split folder matching `pattern` (e.g. `US-*.json`), looked up in its `md/` or `json/` subfolder."""
+        sub = FORMAT_DIRS.get(os.path.splitext(pattern)[1].lower(), "")
+        return sorted(self.path(folder).joinpath(sub).glob(pattern))
+
+    def receipt(self) -> dict:
+        """What is on disk right now, folder by folder, so a stage can prove its files are where the user can open them."""
+        out = {}
+        for d in SPLIT_DIRS:
+            base = self.root / d
+            md = [x for x in (base / "md").glob("*") if x.is_file()]
+            js = [x for x in (base / "json").glob("*") if x.is_file()]
+            if md or js:
+                out[d] = {"md_folder": str(base / "md"), "md_files": len(md), "json_folder": str(base / "json"), "json_files": len(js)}
+        reports = [x for x in (self.root / "reports").glob("*.md")]
+        if reports:
+            out["reports"] = {"folder": str(self.root / "reports"), "files": len(reports)}
+        return out
 
     def _guard_source(self, target: Path) -> None:
         st = self._state or {}
@@ -310,7 +368,7 @@ class Project:
 
     # ----------------------------------------------------------- requirements
     def req_ids(self) -> list[str]:
-        return sorted(p.stem for p in self.path(REQ_DIR).glob("REQ-*.json"))
+        return sorted(p.stem for p in self.files(REQ_DIR, "REQ-*.json"))
 
     def requirements(self) -> list[dict]:
         return [self.read_json(f"{REQ_DIR}/{i}.json") for i in self.req_ids()]
@@ -321,7 +379,6 @@ class Project:
         return self.read_json(f"{REQ_DIR}/{rid}.json")
 
     def save_requirement(self, r: dict) -> None:
-        self.path(REQ_DIR).mkdir(parents=True, exist_ok=True)
         self.write_json(f"{REQ_DIR}/{r['requirement_id']}.json", r, "requirement")
         self.write_text(f"{REQ_DIR}/{r['requirement_id']}.md", render.requirement_md(r))
 
@@ -374,7 +431,7 @@ class Project:
         `unreadable_story_files` lists it so `validate` and change detection can report it."""
         out = []
         for b in UNRESOLVED_OK_STORY_BUCKETS:
-            for f in sorted(self.path(f"stories/{b}").glob("US-*.json")):
+            for f in self.files(f"stories/{b}", "US-*.json"):
                 try:
                     out.append((b, read_json(f)))
                 except (ValueError, OSError):
@@ -384,7 +441,7 @@ class Project:
     def unreadable_story_files(self) -> list[str]:
         bad = []
         for b in UNRESOLVED_OK_STORY_BUCKETS:
-            for f in sorted(self.path(f"stories/{b}").glob("US-*.json")):
+            for f in self.files(f"stories/{b}", "US-*.json"):
                 try:
                     read_json(f)
                 except (ValueError, OSError):
@@ -392,7 +449,7 @@ class Project:
         return bad
 
     def archived_stories(self) -> list[dict]:
-        return [read_json(f) for f in sorted(self.path("stories/archive").glob("US-*.json"))]
+        return [read_json(f) for f in self.files("stories/archive", "US-*.json")]
 
     def save_story(self, bucket: str, s: dict) -> None:
         self.write_json(f"stories/{bucket}/{s['story_id']}.json", s, "story")

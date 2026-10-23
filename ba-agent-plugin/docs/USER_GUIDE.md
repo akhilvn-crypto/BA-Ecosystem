@@ -24,18 +24,21 @@ Claude greets you, proposes an output folder (default: the folder that contains 
 
 ```
 <project>/
-  extracted/    BRD outline + fingerprint metadata
-  atomic-requirements/ REQ-001.md|json …       (atomic requirements; open the .md files)
-  gaps/         gap-register.json, GAP-001.md …
-  decisions/    decision-log.jsonl, DEC-001.md …
-  baselines/    baseline-v1.json|md, baseline-manifest.json
-  stories/      candidates/  approved/  unapproved/  deferred/  archive/
-  changes/      change-register.json, CHG-001.md|json …   (what changed, impact, actions, progress)
+  Every folder below has two subfolders:  md/ = files you read,  json/ = records the tool uses
+  extracted/    md/brd-outline.md · json/source-metadata.json
+  atomic-requirements/  md/REQ-001.md …  json/REQ-001.json …   (atomic requirements; open the md folder)
+  gaps/         md/GAP-001.md …  json/gap-register.json
+  decisions/    md/DEC-001.md …  json/decision-log.jsonl
+  baselines/    md/baseline-v1.md …  json/baseline-v1.json, baseline-manifest.json
+  stories/      candidates/  approved/  unapproved/  deferred/  archive/   (each with md/US-001.md and json/US-001.json)
+  changes/      md/CHG-001.md …  json/CHG-001.json, change-register.json   (what changed, impact, actions, progress)
   snapshots/    brd/ (accepted BRD text per version)  stories/ (every approved story version + hashes)
   reports/      workflow-summary.md, traceability-report.md
   state/        workflow.json, audit.jsonl (IST), pending/, backups/, inbox/
 ```
-**Only `stories/approved/` holds approved work.** Stories you marked *not approved* are saved in `stories/unapproved/` (with your note in their review history); open gaps are in `gaps/` (one `GAP-xxx.md` each plus `gap-register.json`). `archive/` keeps every superseded story version.
+**Files are saved as each stage finishes**, straight into your project folder, and Claude tells you the folder to open before it asks you to review or approve (no copying needed). Say "where are my files?" at any time and it lists every folder.
+
+**Only `stories/approved/` holds approved work** (open `stories/approved/md/`). Stories you marked *not approved* are saved in `stories/unapproved/` (with your note in their review history); open gaps are in `gaps/md/` (one `GAP-xxx.md` each; the register is `gaps/json/gap-register.json`). `archive/` keeps every superseded story version.
 
 ## 4. Resume, status, review
 

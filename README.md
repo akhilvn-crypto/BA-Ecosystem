@@ -11,7 +11,7 @@ Business analysts and project managers lose time turning BRDs into clean require
 3. **Finds gaps** (10-category taxonomy, prioritised, one question each).
 4. **Resolves gaps with a named decision owner**. Every closure is recorded with who decided, their role and an IST timestamp.
 5. **Freezes a versioned baseline** (`baseline-vN`) once you confirm it.
-6. **Drafts user stories** with Given/When/Then criteria. Only the ones you approve are saved to `stories/approved/`.
+6. **Drafts user stories** with Given/When/Then criteria. Only the ones you approve are saved to `stories/approved/` (readable files in `md/`, records in `json/`).
 7. **Detects changes** to the BRD and to approved stories, explains their impact before anything is updated, and never discards a manual edit.
 
 Nothing is approved, resolved or deferred without your explicit decision. All state lives as plain files in a folder you choose, so work is fully resumable.
@@ -61,7 +61,9 @@ Typical flow:
 3. Answer gaps one at a time (highest priority first). Every gap lets you type an answer or instruction in **Other** or pick **Explain This Question**. For **Critical/High/security-or-compliance** gaps you can also pick **Answer Later** or **Defer This Gap** (a reason is required). For **Medium/Low** gaps you can instead use the **Suggested Answer** (only offered when the BRD supports one) or **Carry Forward**: the gap stays open and visible, stories are still written, and each affected story names the gap, its possible impact and is marked as needing clarification until you answer. Confirm each closure.
 4. Confirm the **baseline**.
 5. Review stories one by one: **approve**, **edit** (creates a new version that needs re-approval) or **defer**.
-6. Take the approved stories from `<project>/stories/approved/`.
+6. Take the approved stories from `<project>/stories/approved/md/` (the machine-readable records are in `…/approved/json/`).
+
+Every stage saves its files into the project folder as it finishes (readable copies in each folder's `md/` subfolder, records in `json/`), and Claude tells you where before it asks for your review. Nothing has to be copied.
 
 If the BRD changes, run `/ba-agent:changes <project folder>` (or `/ba-agent:start <project folder>` again). The change is explained first: what changed, and which requirements, open gaps, decisions, stories and baseline it touches. Nothing moves until you apply it, and only the affected items are flagged for review. Formatting-only edits (layout, whitespace, re-wrapping) are accepted automatically; a changed word or number is always treated as material. Earlier decisions stay on record.
 
@@ -83,6 +85,6 @@ All in [`ba-agent-plugin/`](ba-agent-plugin/): [User guide](ba-agent-plugin/docs
 
 ```
 cd ba-agent-plugin
-python -m unittest discover -s tests -t . -v      # 235 tests
+python -m unittest discover -s tests -t . -v      # 244 tests
 claude plugin validate .
 ```

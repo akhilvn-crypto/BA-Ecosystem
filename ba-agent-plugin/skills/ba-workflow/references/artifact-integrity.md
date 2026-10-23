@@ -1,6 +1,6 @@
 # Artifact integrity (shared reference)
 
-**Layout** (all under the confirmed project folder): `extracted/` (outline + source metadata) · `atomic-requirements/REQ-*.json|md` · `gaps/gap-register.json` + `GAP-*.md` · `decisions/decision-log.jsonl` + `DEC-*.md` · `baselines/baseline-vN.json|md` + `baseline-manifest.json` · `stories/{candidates,approved,unapproved,deferred,archive}/` · `reports/` · `state/workflow.json`, `state/audit.jsonl`, `state/pending/`, `state/backups/`, `state/inbox/`.
+**Layout** (all under the confirmed project folder): every artifact folder holds two subfolders, `md/` (readable copies) and `json/` (machine records), and no loose files: `extracted/` (outline + source metadata) · `atomic-requirements/` (`md/REQ-*.md`, `json/REQ-*.json`) · `gaps/` (`json/gap-register.json`, `md/GAP-*.md`) · `decisions/` (`json/decision-log.jsonl`, `md/DEC-*.md`) · `baselines/` (`md/baseline-vN.md`, `json/baseline-vN.json` + `baseline-manifest.json`) · `changes/` (`md/CHG-nnn.md`, `json/CHG-nnn.json`) · `stories/{candidates,approved,unapproved,deferred,archive}/` (each with `md/US-nnn.md` and `json/US-nnn.json`) · `reports/` · `state/workflow.json`, `state/audit.jsonl`, `state/pending/`, `state/backups/`, `state/inbox/`.
 
 **Rules**
 1. The JSON records are authoritative; the `.md` files are rendered views. Never hand-edit anything under `state/`, `atomic-requirements/`, `gaps/`, `decisions/`, `baselines/` or `stories/`. Change them only through the core so schemas, transitions and audit events stay consistent.

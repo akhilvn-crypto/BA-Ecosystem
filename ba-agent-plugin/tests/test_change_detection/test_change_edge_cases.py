@@ -16,7 +16,7 @@ from ba_lib import changes, checks, reqs, stories, storytrack, util  # noqa: E40
 class EdgeCaseChangeTests(ChangeTest):
     def test_markdown_with_a_destroyed_layout_is_kept_and_flagged_not_trusted(self):
         p = self.two_approved()
-        md = p.root / "stories" / "approved" / "US-001.md"
+        md = p.root / "stories" / "approved" / "md" / "US-001.md"
         md.write_text("I rewrote this whole file as a note to self.\n", encoding="utf-8")
         rec = changes.check(p)["changes"][0]
         self.assertIn("markdown_structure", rec["changes"][0]["fields"])
@@ -32,7 +32,7 @@ class EdgeCaseChangeTests(ChangeTest):
 
     def test_corrupt_story_json_is_preserved_and_the_approval_restored(self):
         p = self.two_approved()
-        (p.root / "stories" / "approved" / "US-001.json").write_text("{ this is not json", encoding="utf-8")
+        (p.root / "stories" / "approved" / "json" / "US-001.json").write_text("{ this is not json", encoding="utf-8")
         rec = changes.check(p)["changes"][0]
         self.assertEqual(rec["subject"]["change_type"], "UNREADABLE")
         out = changes.apply(p, rec["change_id"], *PO, "apply")
@@ -54,7 +54,7 @@ class EdgeCaseChangeTests(ChangeTest):
         self.assertIn("warning", out["effects"])
         self.assertEqual(self.approved_json(p)["title"], "Edited too", "nothing is overwritten from an untrustworthy snapshot")
         self.assertTrue(self.approved_json(p)["impact_review"]["pending"])
-        self.assertTrue((p.root / "stories" / "candidates" / "US-001.json").exists(), "the edit is still captured for review")
+        self.assertTrue((p.root / "stories" / "candidates" / "json" / "US-001.json").exists(), "the edit is still captured for review")
 
     def test_hand_edit_that_links_an_unknown_requirement_is_captured_not_crashed(self):
         p = self.two_approved()
@@ -64,7 +64,7 @@ class EdgeCaseChangeTests(ChangeTest):
         rec = changes.check(p)["changes"][0]
         self.assertEqual(rec["impact"]["requirements"]["unknown_to_project"], ["REQ-999"])
         changes.apply(p, rec["change_id"], *PO, "apply")
-        cand = json.loads((p.root / "stories" / "candidates" / "US-001.json").read_text(encoding="utf-8"))
+        cand = json.loads((p.root / "stories" / "candidates" / "json" / "US-001.json").read_text(encoding="utf-8"))
         self.assertEqual(cand["requirement_ids"], ["REQ-001", "REQ-999"])
         self.assertEqual(code_of(stories.approve, p, "US-001", 2, "approve", *PO), "UNLINKED_REQUIREMENT",
                          "the normal rules still gate approval of the captured edit")

@@ -157,3 +157,14 @@ class BATest(unittest.TestCase):
                                  acceptance_criteria=["Given a completed registration, when the account is created, then a confirmation email is sent."])]
         stories.add_stories(p, items[:n])
         return p
+
+
+def flatten_to_legacy(root: Path) -> None:
+    """Turn a project into the pre-1.6.0 layout where `.md` and `.json` files shared one folder."""
+    for d in projmod.SPLIT_DIRS:
+        base = Path(root) / d
+        for sub in ("md", "json"):
+            for f in sorted((base / sub).glob("*")) if (base / sub).is_dir() else []:
+                f.replace(base / f.name)
+            if (base / sub).is_dir():
+                (base / sub).rmdir()

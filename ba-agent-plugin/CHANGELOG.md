@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.6.0
+- **`md/` and `json/` subfolders in every artifact folder.** Readable copies now live in `md/` and machine records in `json/`, so a folder is no longer a mix of both: `atomic-requirements/`, `gaps/`, `decisions/`, `baselines/`, `extracted/`, `changes/` and each of `stories/{candidates,approved,unapproved,deferred,archive}/`. Example: `stories/approved/md/US-001.md` and `stories/approved/json/US-001.json`. `state/`, `snapshots/` and `reports/` are unchanged.
+- **Existing projects migrate on open.** Loose `.md`/`.json`/`.jsonl` files from the old layout are moved into the new subfolders (byte for byte, idempotent). A loose file that differs from the one already in the subfolder is never overwritten; it stays where it is.
+- **Every stage proves its files are saved.** Every writing command now returns `files_saved` (folder, `md/` and `json/` paths, file counts); `req commit` returns `readable_folder`, `json_folder` and `files_on_disk`; `story approve` / `request-changes` return `location` (the real on-disk path) and `saved_to` (absolute). New read-only command `files` lists every artifact folder and its counts at any time.
+- **Skills:** new `ba-workflow/references/save-checkpoint.md` and non-negotiable 9 — after each stage the agent checks the files with its own file tools and tells the user the full folder paths before asking them to review or approve (requirements, gaps, baseline, candidate, approved and unapproved stories). The user no longer has to ask for files to be copied.
+- Tests: 244 (9 new in `test_layout/`: path mapping, populated md/json folders at every stage, receipt, migration of a flat project, no overwrite of a conflicting loose file, CLI `files_saved` / `files`).
+
 ## 1.5.0
 - **Change detection and impact analysis** for the BRD and for approved user stories (new skill `change-detection`, command `/ba-agent:changes`, core group `changes`).
   - **Snapshots + hashes:** the extracted BRD text of every accepted version is stored in `snapshots/brd/`; every approved story version is stored with its material/content/approval hashes and an immutable copy in `snapshots/stories/`. The original BRD is still only ever read.

@@ -94,7 +94,7 @@ class HostileDocumentTests(BATest):
         self.assertGreaterEqual(len(meta["injection_suspects"]), 1)
         self.assertIn("IGNORE ALL PREVIOUS", meta["injection_suspects"][0]["excerpt"])
         self.assertIn("SOURCE_INSTRUCTION_LIKE_CONTENT", [e["event_type"] for e in p.audit_events()])
-        self.assertIn("flagged as instruction-like", (p.root / "extracted/brd-outline.md").read_text(encoding="utf-8"))
+        self.assertIn("flagged as instruction-like", (p.root / "extracted/md/brd-outline.md").read_text(encoding="utf-8"))
         self.assertTrue(any("instruction-like" in w for w in checks.validate_project(p)["warnings"]))
         # the code-level rules a hostile BRD cannot bypass:
         gapmod.add_gaps(p, self.gap_items())
@@ -104,7 +104,7 @@ class HostileDocumentTests(BATest):
         shutil.rmtree(self.tmp / "out")
         p2 = self.to_stories()
         self.assertEqual(code_of(stories.approve, p2, "US-001", 1, ""), "APPROVAL_EVIDENCE_REQUIRED")
-        self.assertEqual(list((p2.root / "stories/approved").glob("*.json")), [])
+        self.assertEqual(list((p2.root / "stories/approved/json").glob("*.json")), [])
 
     def test_hallucinated_quote_or_section_is_rejected(self):
         p = self.new_project()
@@ -195,7 +195,7 @@ class PathSafetyTests(BATest):
                             capture_output=True, text=True)
         self.assertEqual(ok.returncode, 0, ok.stdout + ok.stderr)
         self.assertEqual((p.root / "state/inbox/x.json").read_text(encoding="utf-8"), "[1,2,3]")
-        for bad in ("state/workflow.json", "../evil.json", "atomic-requirements/REQ-001.json", "state/audit.jsonl"):
+        for bad in ("state/workflow.json", "../evil.json", "atomic-requirements/json/REQ-001.json", "state/audit.jsonl"):
             r = subprocess.run([sys.executable, sw, "--root", str(p.root), "--path", bad, "--content-file", str(f)], capture_output=True, text=True)
             self.assertEqual(r.returncode, 1, bad)
             self.assertFalse(json.loads(r.stdout)["ok"])
