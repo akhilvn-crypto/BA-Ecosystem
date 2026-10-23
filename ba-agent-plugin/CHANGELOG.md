@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.7.0
+- **Medium/Low gaps can be carried forward all at once.** Before the first MEDIUM/LOW gap the agent now asks one question - *Go through each* or *Carry all forward* - so a user who wants to bypass them no longer answers a prompt per gap. Choosing *Go through each* keeps the one-gap-at-a-time dialog; the question is not repeated in the same round, and not asked in `/ba-agent:triage-gaps`.
+- Core: `gaps carry-forward-all --by-name --by-role [--reason]` carries every eligible gap (MEDIUM/LOW, non-material, open or presented) forward under the same rules as `gap carry-forward`: each gap keeps its own `carry_forward` record and `GAP_CARRIED_FORWARD` audit event, plus one `GAP_CARRIED_FORWARD_BULK` event. CRITICAL/HIGH, material, deferred and answered-later gaps are never touched and are returned in `not_carried`. A named person and a decision owner are still required (`IDENTITY_REQUIRED`, `OWNER_REQUIRED`); `NOTHING_TO_CARRY_FORWARD` if none is eligible. `gaps next` returns `bulk_carry_forward` (`offer_now`, `eligible_gap_ids`, `count`).
+- Skills/docs: `gap-resolution`, `choice-prompts`, `human-approval`, `cli-reference`, user guide and README describe the choice. No schema or on-disk change. Plugin version 1.7.0.
+
 ## 1.6.0
 - **`md/` and `json/` subfolders in every artifact folder.** Readable copies now live in `md/` and machine records in `json/`, so a folder is no longer a mix of both: `atomic-requirements/`, `gaps/`, `decisions/`, `baselines/`, `extracted/`, `changes/` and each of `stories/{candidates,approved,unapproved,deferred,archive}/`. Example: `stories/approved/md/US-001.md` and `stories/approved/json/US-001.json`. `state/`, `snapshots/` and `reports/` are unchanged.
 - **Existing projects migrate on open.** Loose `.md`/`.json`/`.jsonl` files from the old layout are moved into the new subfolders (byte for byte, idempotent). A loose file that differs from the one already in the subfolder is never overwritten; it stays where it is.

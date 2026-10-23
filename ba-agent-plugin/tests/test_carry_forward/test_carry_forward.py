@@ -115,6 +115,74 @@ class EligibilityTests(Base):
         self.assertEqual(code_of(gapmod.carry_forward, p, "GAP-003", *OWNER), "INVALID_TRANSITION")
 
 
+class BulkCarryForwardTests(Base):
+    """One-time choice: walk through every MEDIUM/LOW gap, or carry them all forward in one step."""
+
+    def two_nonblocking(self):
+        """GAP-001 HIGH+material, GAP-002 MEDIUM, GAP-003 HIGH, GAP-004 LOW (all non-material except GAP-001)."""
+        p = self.with_requirements()
+        items = self.gap_items()
+        items.append(dict(items[1], title="Footer wording undefined", question="What wording goes in the footer?",
+                          impacted_requirement_ids=["REQ-001"], priority="LOW", priority_rationale="Cosmetic."))
+        gapmod.add_gaps(p, items)
+        self.set_owner(p)
+        return p
+
+    def test_hint_is_offered_only_when_the_gap_shown_is_eligible_and_more_than_one_waits(self):
+        p = self.two_nonblocking()
+        first = gapmod.next_gaps(p, 1)
+        self.assertEqual(first["gaps"][0]["priority"], "HIGH")
+        self.assertFalse(first["bulk_carry_forward"]["offer_now"])
+        self.assertEqual(first["bulk_carry_forward"]["eligible_gap_ids"], ["GAP-002", "GAP-004"])
+        self.answer_and_resolve(p, "GAP-001", "R10 per day late, capped at R200.", "Fine is R10 per day late, maximum R200 per loan.")
+        self.assertEqual(gapmod.next_gaps(p, 1)["gaps"][0]["gap_id"], "GAP-003")
+        gapmod.answer_later(p, "GAP-003")
+        # GAP-003 skipped once, so the MEDIUM gap is shown next and the choice is offered
+        nxt = gapmod.next_gaps(p, 1)
+        self.assertEqual(nxt["gaps"][0]["gap_id"], "GAP-002")
+        self.assertTrue(nxt["bulk_carry_forward"]["offer_now"])
+
+    def test_carry_all_carries_each_eligible_gap_with_its_own_record_and_leaves_the_rest(self):
+        p = self.two_nonblocking()
+        gapmod.next_gaps(p, 10)
+        out = gapmod.carry_forward_all(p, *OWNER, "Not needed for the first release.")
+        self.assertEqual((out["carried_forward"], out["count"]), (["GAP-002", "GAP-004"], 2))
+        self.assertEqual({x["gap_id"] for x in out["not_carried"]}, {"GAP-001", "GAP-003"})
+        self.assertTrue(all(x["why"] for x in out["not_carried"]))
+        for gid in ("GAP-002", "GAP-004"):
+            g = p.gap(gid)
+            self.assertEqual((g["status"], g["decision_id"]), ("OPEN", None))
+            self.assertEqual((g["carry_forward"]["by_name"], g["carry_forward"]["reason"]), (OWNER[0], "Not needed for the first release."))
+        for gid in ("GAP-001", "GAP-003"):
+            self.assertIsNone(p.gap(gid)["carry_forward"])
+            self.assertEqual(p.gap(gid)["status"], "WAITING_FOR_ANSWER")
+        self.assertEqual(len(self.audit(p, "GAP_CARRIED_FORWARD")), 2)
+        bulk = self.audit(p, "GAP_CARRIED_FORWARD_BULK")
+        self.assertEqual((len(bulk), bulk[0]["gap_ids"]), (1, ["GAP-002", "GAP-004"]))
+        self.assertEqual(gapmod.bulk_carry_forward_candidates(p), [])
+        self.assertTrue(checks.validate_project(p)["ok"])
+
+    def test_carry_all_needs_a_named_person_and_something_to_carry(self):
+        p = self.two_nonblocking()
+        gapmod.next_gaps(p, 10)
+        self.assertEqual(code_of(gapmod.carry_forward_all, p), "IDENTITY_REQUIRED")
+        self.assertEqual(code_of(gapmod.carry_forward_all, p, "Claude", "AI"), "IDENTITY_REQUIRED")
+        self.assertEqual([g["carry_forward"] for g in p.gaps()], [None] * 4, "refused attempts change nothing")
+        gapmod.carry_forward_all(p, *OWNER)
+        self.assertEqual(code_of(gapmod.carry_forward_all, p, *OWNER), "NOTHING_TO_CARRY_FORWARD")
+
+    def test_carry_all_skips_material_medium_gaps_and_requires_an_owner(self):
+        p = self.with_requirements()
+        gapmod.add_gaps(p, self.gap_items())
+        self.assertEqual(code_of(gapmod.carry_forward_all, p, *OWNER), "OWNER_REQUIRED")
+        self.set_owner(p)
+        gapmod.next_gaps(p, 10)
+        gaps = p.gaps()
+        gaps[1]["material"] = True
+        p.save_gaps(gaps, touched=["GAP-002"])
+        self.assertEqual(code_of(gapmod.carry_forward_all, p, *OWNER), "NOTHING_TO_CARRY_FORWARD")
+
+
 class CarryForwardStateTests(Base):
     def test_gap_stays_open_with_a_full_audit_record(self):
         p = self.presented()
@@ -613,6 +681,20 @@ class CliTests(BATest):
         out = json.loads(r.stdout)
         self.assertEqual((r.returncode, out["ok"]), (0, True) if ok else (1, False), r.stdout + r.stderr)
         return out
+
+    def test_cli_carry_forward_all(self):
+        p = self.with_requirements()
+        items = self.gap_items()
+        items.append(dict(items[1], title="Footer wording undefined", question="What wording goes in the footer?",
+                          impacted_requirement_ids=["REQ-001"], priority="LOW"))
+        gapmod.add_gaps(p, items)
+        self.set_owner(p)
+        nxt = gapmod.next_gaps(p, 10)
+        self.assertEqual(nxt["bulk_carry_forward"]["eligible_gap_ids"], ["GAP-002", "GAP-004"])
+        self.run_ba(p.root, "gaps", "carry-forward-all", ok=False, args_file={"by-name": OWNER[0]})
+        out = self.run_ba(p.root, "gaps", "carry-forward-all", args_file={"by-name": OWNER[0], "by-role": OWNER[1], "reason": "Later"})
+        self.assertEqual(out["carried_forward"], ["GAP-002", "GAP-004"])
+        self.assertEqual(self.run_ba(p.root, "validate")["errors"], [])
 
     def test_cli_carry_forward_explain_suggestion_story_gaps_and_revisit(self):
         p = self.with_requirements()

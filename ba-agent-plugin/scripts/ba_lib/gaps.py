@@ -407,7 +407,16 @@ def next_gaps(p, limit: int = 1, carried: bool = False, gap_id: str | None = Non
             "unresolved_total": sum(1 for g in gaps if g["status"] != "RESOLVED"),
             "high_priority_outstanding": [g["gap_id"] for g in gaps if g["status"] != "RESOLVED" and g["priority"] in ("CRITICAL", "HIGH")],
             "carried_forward_open": carried_forward_gaps(p),
-            "deferred_due_for_revisit": due_for_revisit(p)}
+            "deferred_due_for_revisit": due_for_revisit(p),
+            "bulk_carry_forward": _bulk_hint(p, chosen)}
+
+
+def _bulk_hint(p, chosen: list[dict]) -> dict:
+    """Tells the agent whether to offer the one-time 'walk through MEDIUM/LOW gaps, or carry them all forward' question:
+    only when the gap being shown is itself eligible and more than one eligible gap is waiting."""
+    ids = bulk_carry_forward_candidates(p)
+    first_eligible = bool(chosen) and chosen[0]["gap_id"] in ids
+    return {"offer_now": first_eligible and len(ids) > 1, "eligible_gap_ids": ids, "count": len(ids)}
 
 
 def _get(gaps, gid):
@@ -899,6 +908,36 @@ def carry_forward(p, gid: str, by_name: str | None = None, by_role: str | None =
             "note": "The gap is still OPEN, not resolved. Stories for " + ", ".join(cf["affected_requirement_ids"])
                     + " can now be generated; each must name this gap, its possible impact and be flagged NEEDS_CLARIFICATION "
                       "(or NOT_READY). Revisit it any time with `gap revisit`."}
+
+
+def bulk_carry_forward_candidates(p) -> list[str]:
+    """Unresolved, not-yet-carried MEDIUM/LOW non-material gaps that `carry_forward_all` would carry, in review order."""
+    rank = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+    cand = [g for g in p.gaps() if g["status"] in ("WAITING_FOR_ANSWER", "OPEN") and not g.get("carry_forward")
+            and carry_forward_blocker(p, g) is None]
+    cand.sort(key=lambda g: (rank[g["priority"]], g["gap_id"]))
+    return [g["gap_id"] for g in cand]
+
+
+def carry_forward_all(p, by_name: str | None = None, by_role: str | None = None, reason: str | None = None) -> dict:
+    """Carry every eligible MEDIUM/LOW non-material gap forward in one step (the human chose not to walk through them).
+    Each gap gets its own `carry_forward` record and `GAP_CARRIED_FORWARD` audit event, exactly as `gap carry-forward`.
+    CRITICAL/HIGH and material gaps are never touched; they are listed as `not_carried`."""
+    actor_name, actor_role = require_identity(by_name, by_role, "Person carrying the gaps forward")
+    require_owner(p)
+    ids = bulk_carry_forward_candidates(p)
+    if not ids:
+        raise BAError("NOTHING_TO_CARRY_FORWARD", "No open MEDIUM/LOW non-material gap is left to carry forward.")
+    carried = [carry_forward(p, gid, actor_name, actor_role, reason) for gid in ids]
+    left = [{"gap_id": g["gap_id"], "priority": g["priority"], "status": g["status"], "why": carry_forward_blocker(p, g)}
+            for g in p.gaps() if g["status"] != "RESOLVED" and not g.get("carry_forward") and g["gap_id"] not in ids]
+    p.audit("GAP_CARRIED_FORWARD_BULK", gap_ids=ids, by_name=actor_name, by_role=actor_role, reason=normalize_ws(reason or "") or None)
+    return {"carried_forward": ids, "count": len(ids), "by": {"name": actor_name, "role": actor_role},
+            "stories_to_declare_the_gaps": sorted({s for c in carried for s in c["stories_to_declare_the_gap"]}),
+            "not_carried": left,
+            "note": "Every listed gap is still OPEN, not resolved. Stories for their requirements can now be generated, each naming "
+                    "the gap(s) and flagged NEEDS_CLARIFICATION (or NOT_READY). `not_carried` gaps (CRITICAL/HIGH/material, deferred "
+                    "or not yet asked) keep their own rules. Revisit any of them with `gap revisit` / `gaps next --carried`."}
 
 
 def revisit(p, gid: str) -> dict:

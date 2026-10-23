@@ -1,6 +1,6 @@
 {
   "name": "ba-agent",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "Interactive Business Analyst: turns a BRD into traceable atomic requirements, resolves gaps with a named decision owner (IST-stamped audit trail), builds a versioned baseline, and stores only human-approved user stories in your local project folder.",
   "author": {
     "name": "BA Agent Plugin"

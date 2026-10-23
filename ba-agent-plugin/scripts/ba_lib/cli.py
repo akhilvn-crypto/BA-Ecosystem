@@ -96,7 +96,8 @@ def build_parser() -> argparse.ArgumentParser:
                   "unknown": [opt("--choice", default="pause")], "show": []})
     grp("gaps", {"add": [opt("--file")], "commit": [opt("--cross-pass-done", action="store_true")],
                  "next": [opt("--limit", type=int, default=1), opt("--carried", action="store_true"), opt("--id")],
-                 "list": [opt("--status")], "triage": [opt("--status")]})
+                 "list": [opt("--status")], "triage": [opt("--status")],
+                 "carry-forward-all": [opt("--by-name"), opt("--by-role"), opt("--reason"), opt("--reason-file")]})
     resolve_opts = [pos("id"), opt("--answer-id"), opt("--interpretation"), opt("--interpretation-file"), opt("--closed-by-name"),
                     opt("--closed-by-role"), opt("--closure-summary"), opt("--confirmation"), opt("--confirmation-file"),
                     opt("--conflict-status", default="PASSED"), opt("--conflicting"), opt("--reviewed"),
@@ -273,6 +274,8 @@ def _dispatch(a, p, g, act):
             return gapmod.next_gaps(p, a.limit, a.carried, a.id)
         if act == "triage":
             return gapmod.triage(p, a.status)
+        if act == "carry-forward-all":
+            return gapmod.carry_forward_all(p, a.by_name, a.by_role, _text(a, "reason"))
         return {"gaps": [dict({k: x[k] for k in ("gap_id", "category", "priority", "status", "title", "impacted_requirement_ids", "decision_id")},
                               carried_forward=bool(x.get("carry_forward")))
                          for x in p.gaps() if not a.status or x["status"] == a.status]}
