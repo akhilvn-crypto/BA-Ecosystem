@@ -33,6 +33,7 @@ Workflow: `INITIALIZED → BRD_PARSED → REQUIREMENTS_READY → GAP_ANALYSIS �
 
 `triage-gaps` and `triage-stories` are orchestration only; they add no business rules and no agents (the gap-analyst / story-builder agents generate content and are not involved in reviewing it).
 - **List** (read-only, derived from the files on every call, so resume needs no extra state): `gaps triage` = unresolved gaps that are `OPEN` (incl. `WAITING_FOR_ANSWER`, reopened, answer-later, carried forward) or `DEFERRED`; `story triage` = stories in `candidates/`, `unapproved/`, `deferred/`, each with `eligible` / `blockers` computed from the same rules `story approve` enforces (impact review, changed requirements, blocking gaps, stale baseline).
+- **Preflight (1.8.0):** `story triage` reports problems that block every story once (`preflight`); the command clears them in one dialog before presenting stories, and a story flagged by a resolved gap offers `Update story` with the decision to apply.
 - **Present one:** `gaps next --id` (OPEN → `WAITING_FOR_ANSWER`; DEFERRED and carried-forward gaps are returned unchanged, because looking must not change state), `story next --id` (any pending folder).
 - **Act:** only existing actions — `gap answer / explain / defer / carry-forward / revisit / resolve`, `story approve / edit / defer / request-changes / revisit` — plus two audit-only "keep" actions (`gap keep`, `story keep`). A deferred or carried gap needs `gap revisit` before it can be answered; a deferred or not-approved story needs `story revisit` before it can be approved (same version, audited). `story edit` always creates a new CANDIDATE version.
 - **Transitions added:** story `CHANGES_REQUESTED → DEFERRED`; `story revisit` accepts `CHANGES_REQUESTED → CANDIDATE` (already in the transition table).
@@ -63,6 +64,17 @@ Workflow: `INITIALIZED → BRD_PARSED → REQUIREMENTS_READY → GAP_ANALYSIS �
 ## Conflict handling
 
 Every answer is compared (advisory, deterministic) with requirements, active decisions and earlier accepted answers: numeric disagreement, negation polarity, opposing terms. Candidates must be explicitly reviewed (`--reviewed`) before `PASSED`; a recorded conflict blocks `PASSED`; a confirmed change (`CHANGE_CONFIRMED`) needs a named authoriser, a verbatim statement, and new content for every contradicted requirement; it versions the requirement, supersedes contradicted decisions, reopens gaps closed by them, flags stories, stales the baseline and re-opens analysis. The heuristic is a safety net, not a semantic judge — the model and human decide.
+
+## Context engineering (1.8.0)
+
+Principle: the model receives *the right information, only when it is needed*, and the core does everything that does not need judgement.
+- **Load on demand.** `ba-workflow` is the router and the non-negotiables; each stage skill is a short loop. Branch detail lives in `references/` of that skill and is opened only at the branch (`gap-resolution/references/{actions,validate-and-resolve,revisit,triage}.md`, `story-review/references/triage.md`). `change-detection` loads only when `changes check` reports a change. `tests/test_context` fails if a skill grows past its budget or a reference pointer dangles.
+- **Presentation in code (`ba_lib/present.py`).** One gap or story at a time. The core builds the `AskUserQuestion` payload (`dialog`), the compact markdown (`card`) and a numbered `fallback`; the model relays. A gap whose dialog holds everything is `inline` - sent as the dialog alone; a story always sends its card first because its acceptance criteria must be read to be approved. Queues are a one-line `summary`.
+- **Right fields, right time.** The gap packet keeps what the model *acts on*; `gap explain` carries the plain-language facts (fetched only if the human asks), `story next` carries a *Decision to apply* only for a story flagged by a resolved gap, `story show` / `--full` the raw record only when an edit file is needed.
+- **Hoisted blockers.** `story triage.preflight` states what blocks every story once (stale baseline, pending BRD review), so the user is never walked through stories that cannot be approved when one step unblocks them all.
+- **Compact output.** One-line JSON, empty values omitted, `files_saved` limited to the folders a command changed (a fresh disk scan taken after the write, which is also the save check).
+- **Delegation.** `source outline` returns sizes, `batches` (<= 12k characters) and `delegate` (BRD > 24k characters). Helper agents read the sections and return <= 8 lines plus a file under `state/inbox/`; only the main session runs mutating commands.
+- Measure with `python -m tests.measure_efficiency` (prompt surface per stage, CLI result sizes).
 
 ## Efficiency design
 

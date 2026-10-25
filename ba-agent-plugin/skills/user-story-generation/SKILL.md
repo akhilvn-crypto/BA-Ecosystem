@@ -1,6 +1,6 @@
 ---
 name: user-story-generation
-description: Generate candidate user stories with Given/When/Then acceptance criteria from the approved requirements baseline only, linked to requirement and decision IDs. Use when a baseline has been confirmed and stories have not been generated yet or new READY requirements need stories.
+description: Generate candidate user stories with Given/When/Then criteria from the approved baseline only, linked to requirement and decision IDs. Use after a baseline is confirmed.
 ---
 
 # User-story generation
@@ -39,8 +39,8 @@ A requirement can be `READY` while a MEDIUM/LOW gap on it is still open because 
 ### When a carried-forward gap is resolved
 `gap resolve` flags every story that named the gap (including approved ones) and reports `stories_to_update`. After the baseline is refreshed and confirmed (`requirements-baseline`), update each story with `story edit` (write a JSON file of changed fields): remove the resolved gap from `unresolved_decisions` (the core refuses a story that still lists it), apply the decision to the acceptance criteria and assumptions using the decision's validated interpretation, and keep any other open gaps declared. The core recomputes `open_gap_ids`, `decision_ids` and `readiness` and creates a new version that goes through `story-review` again; an approved earlier version stays in force until the new version is approved. A story that still names a resolved gap cannot be cleared with `confirm-unaffected`. If a new gap is opened later for a story's requirements, the story is flagged the same way and must declare it.
 
-Before presenting: `validate`, `trace` (coverage: every READY requirement should end up with a story; list `uncovered_by_any_story`), then a brief semantic self-review (unsupported assumptions, ambiguity, consistency). For large sets the optional `ba-agent:story-builder` and `ba-agent:quality-reviewer` agents can draft and independently review; you still run `story add`.
+Before presenting: `validate`, `trace` (coverage: every READY requirement should end up with a story; list `uncovered_by_any_story`), then a brief semantic self-review (unsupported assumptions, ambiguity, consistency). For more than a handful of stories, give the requirement IDs to `ba-agent:story-builder` (and then `ba-agent:quality-reviewer`) instead of drafting them here: they return at most 8 lines and a file, and you still run `story add`.
 
-**Where they are saved:** `story add` writes each candidate to `<project>/stories/candidates/md/US-nnn.md` (readable) and `…/candidates/json/US-nnn.json`. Take the folders and counts from `files_saved`, check the `md/` folder with your own file tools, and tell the user the full path and how many stories are waiting there before review starts (`../ba-workflow/references/save-checkpoint.md`).
+**Where they are saved:** `story add` writes each candidate to `stories/candidates/md/US-nnn.md` (records in `json/`). Tell the user the `md_folder` path and `md_files` count from `files_saved` before review starts (`../ba-workflow/references/save-checkpoint.md`).
 
 Next: `story-review`.

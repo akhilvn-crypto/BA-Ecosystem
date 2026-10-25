@@ -223,17 +223,33 @@ class Project:
         sub = FORMAT_DIRS.get(os.path.splitext(pattern)[1].lower(), "")
         return sorted(self.path(folder).joinpath(sub).glob(pattern))
 
-    def receipt(self) -> dict:
-        """What is on disk right now, folder by folder, so a stage can prove its files are where the user can open them."""
+    def _dir_sig(self) -> dict:
+        """(file count, newest mtime) per artifact folder: cheap enough to take before and after every command."""
         out = {}
         for d in SPLIT_DIRS:
+            for sub in ("md", "json"):
+                files = [x for x in (self.root / d / sub).glob("*") if x.is_file()]
+                out[f"{d}/{sub}"] = (len(files), max((x.stat().st_mtime_ns for x in files), default=0))
+        reports = [x for x in (self.root / "reports").glob("*.md")]
+        out["reports"] = (len(reports), max((x.stat().st_mtime_ns for x in reports), default=0))
+        return out
+
+    def receipt(self, since: dict | None = None) -> dict:
+        """What is on disk right now, folder by folder, so a stage can prove its files are where the user can open them.
+        With `since` (a `_dir_sig()` taken before a command) only the folders that command changed are listed, in compact
+        form (the json/ folder sits next to md/)."""
+        now = self._dir_sig() if since is not None else None
+        out = {}
+        for d in SPLIT_DIRS:
+            if since is not None and all(now[f"{d}/{sub}"] == since.get(f"{d}/{sub}") for sub in ("md", "json")):
+                continue
             base = self.root / d
             md = [x for x in (base / "md").glob("*") if x.is_file()]
             js = [x for x in (base / "json").glob("*") if x.is_file()]
             if md or js:
-                out[d] = {"md_folder": str(base / "md"), "md_files": len(md), "json_folder": str(base / "json"), "json_files": len(js)}
+                out[d] = {"md_folder": str(base / "md"), "md_files": len(md), "json_files": len(js)} if since is not None else                     {"md_folder": str(base / "md"), "md_files": len(md), "json_folder": str(base / "json"), "json_files": len(js)}
         reports = [x for x in (self.root / "reports").glob("*.md")]
-        if reports:
+        if reports and (since is None or now["reports"] != since.get("reports")):
             out["reports"] = {"folder": str(self.root / "reports"), "files": len(reports)}
         return out
 

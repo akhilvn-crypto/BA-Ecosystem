@@ -1,6 +1,6 @@
 ---
 name: atomic-requirements
-description: Decompose a parsed BRD into atomic, independently understandable requirements with stable IDs, verbatim source quotes and section references. Use after BRD ingestion, when the stage is BRD_PARSED, or when new BRD sections need requirements.
+description: Decompose a parsed BRD into atomic requirements with stable IDs, verbatim source quotes and section references. Use when the stage is BRD_PARSED.
 ---
 
 # Atomic requirements
@@ -27,8 +27,6 @@ For each requirement produce (a JSON list, saved to `<project>/state/inbox/reqs.
 
 Then: `req add --file …` (IDs `REQ-001…` are assigned for you) → `req pairs` (cross-check candidates) → `req commit` (validates schema, IDs, source references; stage → `REQUIREMENTS_READY`).
 
-**Where they are saved:** the core writes every requirement straight into the confirmed project folder: readable copies to `<project>/atomic-requirements/md/REQ-nnn.md` and the authoritative records to `<project>/atomic-requirements/json/REQ-nnn.json`. Nothing needs copying, and you never write requirement files yourself. After `req commit`, take `readable_folder`, `json_folder` and `files_on_disk` from its result, list the `md/` folder with your own file tools to confirm the files are really there, and give the user both full folder paths so they can open them. If a folder is empty or missing, say so plainly and stop — do not claim the requirements were saved. Follow `../ba-workflow/references/save-checkpoint.md`.
+**Large BRDs:** `init` / `source outline` return `batches` and `delegate`. When `delegate` is true, do not read the sections here: give each batch of section IDs to a `ba-agent:requirement-analyst` helper (batches run in parallel). Each returns at most 8 lines and a file under `state/inbox/`; you run `req add --file` for each file, then `req pairs` and `req commit`.
 
-Tell the user how many requirements were created and anything flagged. For large BRDs you may delegate a section range to the optional `ba-agent:requirement-analyst` agent (it writes a JSON file and returns a short summary — you still run `req add`).
-
-Next: `gap-analysis`.
+**Where they are saved:** the core writes every requirement into the confirmed project folder (readable copies in `atomic-requirements/md/`, records in `json/`); you never write requirement files yourself. After `req commit`, tell the user the `md_folder` path and `md_files` count from its `files_saved` (`../ba-workflow/references/save-checkpoint.md`). If it is missing or empty, say so plainly and stop.

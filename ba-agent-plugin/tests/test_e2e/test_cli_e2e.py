@@ -71,7 +71,8 @@ class CliTests(unittest.TestCase):
         self.ba("owner", "set", "--name", "Priya Nair", "--role", "Product Owner")
         nxt = self.ba("gaps", "next")
         self.assertEqual(nxt["gaps"][0]["gap_id"], "GAP-001")
-        self.assertEqual(nxt["gaps"][0]["decision_owner"]["name"], "Priya Nair")
+        self.assertNotIn("decision_owner", nxt["gaps"][0], "the owner is reported by `owner show` / `status`, not repeated per packet")
+        self.assertEqual(self.ba("owner", "show")["decision_owner"]["name"], "Priya Nair")
 
         # shell-hostile free text goes through --args-file untouched
         raw = 'Push + email, not SMS. "Quiet hours" 22:00–07:00 → no pushes; it\'s a $5/month cap!\nSecond line.'

@@ -1,38 +1,31 @@
-# Choice prompts (`AskUserQuestion`) — how to show them so they render correctly
+# Choice prompts (`AskUserQuestion`)
 
-Use this whenever the human must pick or type something (in Claude Code and in Claude Cowork alike; where the tool is unavailable, the numbered-list fallback below carries the same choices): gap answers, story review, folder confirmation, owner unknown (pause / analysis-only), conflict (clarify / confirm change / defer), baseline confirmation, policy acceptance.
+## Gaps and stories: the core builds the prompt — relay it
+`gaps next` and `story next` return `present`: `dialog` (a ready `AskUserQuestion` payload), `card` (compact markdown) and `fallback` (numbered choices). Pass `dialog` to the tool unchanged. Never rewrite its options, add a “Recommended” mark, or pre-select.
+- **Gap, `inline: true`:** the dialog alone — no chat message and no card. It already holds priority, question, why, source and affected requirements. Without the tool, send `fallback` (it contains the question).
+- **Gap, `inline: false`:** `card` once, then the dialog. The card carries history the dialog cannot (earlier answers, conflicts, deferral).
+- **Story:** `card` once (the story and its acceptance criteria must be readable), then the dialog.
+- **Queue lists** (`gaps triage`, `story triage`): post the one-line `summary`, not a table.
 
-## The pattern: details in chat, a short question in the dialog
-The dialog is a small panel that shows plain text. Long, multi-line or markdown-heavy questions (tables, bullets, `**bold**`, Given/When/Then blocks) get cramped, truncated or show raw markup. So:
-
-1. **First send a normal chat message** with everything the human needs to read (the gap packet or the full story, evidence, IDs, source references) formatted as ordinary markdown.
-2. **Then call `AskUserQuestion` in the same turn** with a *short, plain-text* question (one or two sentences, no markdown, no tables) that points back at the message: e.g. `GAP-003 (HIGH): what is the refund window in days?`
-3. Do not repeat the long text inside the dialog — except the priority, which always leads the dialog question for a gap (`[HIGH priority] …`) so the human sees how urgent it is while answering.
-4. If the human picks an `Explain …` option, it is a request for help, not an answer: explain in chat in plain language with a real-world example, then show the same dialog again.
-5. Gap dialogs depend on the gap (use the packet's `options`; the tool's own “Other” box always carries a free-text answer or instruction):
-   - **MEDIUM/LOW, non-material gaps** (`carry_forward_allowed: true`): `Suggested Answer` (only when the packet has an evidence-backed `suggested_answer`; put the suggestion and its source in the description), `Explain This Question`, `Carry Forward`. `Carry Forward` needs the name and role of the person choosing it (and an optional reason), so collect those in chat before running the command.
-   - **Once, before the first MEDIUM/LOW gap** (`bulk_carry_forward.offer_now: true`): two options only — `Go through each`, `Carry all forward`. `Carry all forward` needs the name and role of the person choosing it (and an optional reason), collected in chat, then `gaps carry-forward-all`. It never touches CRITICAL/HIGH or material gaps.
-   - **CRITICAL/HIGH/material gaps** (`carry_forward_allowed: false`): `Explain This Question`, `Answer Later`, `Defer This Gap`. `Answer Later` needs no reason; `Defer This Gap` needs a reason (and a revisit date when asked for). Never offer `Carry Forward` for these.
-   - **Triage of a DEFERRED gap**: `Explain This Question`, `Keep Deferred` (the packet's `options`); an answer is typed in “Other”. **Carried-forward gap**: `Explain This Question`, `Keep Carried Forward`.
-   - **Triage of a story** (`/ba-agent:triage-stories`): pending review `Approve vN`, `Defer story`, `Not approved`; not approved earlier `Approve vN`, `Defer story`, `Keep as is`; deferred `Approve vN`, `Not approved`, `Keep deferred`; a story that cannot be approved yet gets no `Approve` option. Typed text is always edit suggestions.
-   - **A detected change** (`/ba-agent:changes`): `Apply impact` (*“Marks the affected requirements, gaps, stories and baseline for review; nothing is approved or discarded”*), `Review later` (*“Changes nothing; the change is raised again next time”*). For a deleted approved story: `Restore story`, `Confirm removal`, `Review later`. Name and role are collected in chat after a yes.
-   A suggested answer is also stated in the chat message with its source; it is an answer only when the human picks it.
+## Prompts you build yourself (keep them this small)
+One question per call; the tool adds the free-text “Other” box itself. Put long detail in chat first, then keep the dialog to one or two plain sentences.
+| Moment | `header` | Options (label — description) |
+|---|---|---|
+| Output folder | `FOLDER` | `Use this folder` — path in the description; another path goes in “Other” |
+| Owner unknown | `OWNER` | `Pause` · `Analysis only` |
+| Baseline | `BASELINE` | `Confirm vN` · `Not now` |
+| MEDIUM/LOW round | `MEDIUM/LOW` | `Go through each` · `Carry all forward` |
+| Detected change | `CHG-nnn` | `Apply impact` — *marks the affected requirements, gaps, stories and baseline for review; nothing is approved or discarded* · `Review later` — *changes nothing; raised again next time*. Deleted approved story: `Restore story` · `Confirm removal` · `Review later` |
+| Conflict | `GAP-00x` | `Clarify` · `Confirm a change` · `Defer This Gap` (or `Carry Forward` when allowed) |
+Name and role are collected in chat after a yes, never invented.
 
 ## Hard limits of the tool
-- 1–4 questions per call. **Use exactly one question per call** here (one gap, one story, one decision).
-- `header`: at most 12 characters (an ID such as `GAP-003` or `US-003` fits; a sentence does not).
-- `options`: **2–4** items. Do not add an “Other” option — the tool adds a free-text “Other” box itself; that box is where the human types answers and suggestions.
-- Every option needs a short `label` (1–5 words) **and** a `description` (one line saying what happens if it is picked).
-- `multiSelect: false` for everything in this workflow.
-- Never put “(Recommended)” on an option for a business answer, approval or closure; a suggestion from the BRD is labelled as a suggestion in its `description`. Never pre-select.
+- Exactly one question per call. `header` ≤ 12 characters. 2–4 `options`, each with a short `label` and a one-line `description`. No “Other” option of your own. `multiSelect: false`.
 
 ## Reading the result
-- The human's picked option or their typed “Other” text is their answer. Quote their own words when recording it.
-- If the dialog comes back empty, was dismissed, or the human typed something unrelated, treat it as **no answer**: say so in one line and ask again in plain chat. Never infer approval, closure or a decision from a dismissed dialog.
-- If typed text mixes intents (e.g. “approve but change X”), do not guess: treat it as suggestions and confirm.
+- The picked option or the typed “Other” text is the human's answer; quote their own words when recording it.
+- Empty, dismissed or unrelated → **no answer**: say so in one line and ask again in plain chat. Never infer approval, closure or a decision from it.
+- Mixed intent (“approve but change X”) → treat as suggestions and confirm.
 
-## When the tool cannot be used
-If `AskUserQuestion` is not callable, try loading it once with ToolSearch `select:AskUserQuestion`. If the call fails (schema error, unavailable in this surface, or the dialog never appears), do **not** retry in a loop: fall back to plain chat — the same message, followed by the choices as a short numbered list, and wait for the reply.
-
-## Free-text-only questions
-Names, roles, folder paths and the decision owner are free text. Ask them in chat (or use a dialog whose first option is the proposed value, e.g. `Use this folder`, with the path in its description, and let the human type another path in “Other”).
+## Without the tool
+Load it once with ToolSearch `select:AskUserQuestion`. If it is not callable or the call fails, do **not** retry in a loop: send `card` plus `fallback` (or the choices as a short numbered list) and wait for the reply. Names, roles, paths and dates are free text — ask in chat.

@@ -11,7 +11,7 @@ import unittest
 from datetime import timedelta
 from pathlib import Path
 
-from tests.helpers import BATest, CLOCK_START, FakeClock, checks, gapmod, stories, util
+from tests.helpers import BATest, CLOCK_START, FakeClock, checks, gapmod, option_labels, stories, util
 from ba_lib.project import Project
 from ba_lib.util import BAError
 
@@ -64,7 +64,7 @@ class GapTriageListTests(GapBase):
         self.assertEqual(d["deferral"], {"reason": "Waiting for Finance", "by_name": "Sam Dsouza", "by_role": "Business Analyst",
                                          "at_ist": d["deferral"]["at_ist"], "revisit_by": "2099-01-01", "waiting_on": "Finance team"})
         self.assertTrue(d["deferral"]["at_ist"].endswith("+05:30"))
-        self.assertEqual(d["decision_owner"], {"name": OWNER[0], "role": OWNER[1]})
+        self.assertNotIn("decision_owner", d, "the owner is reported once at the top, not on every row")
         self.assertEqual(d["requirement_ids"], ["REQ-006"])
         self.assertTrue(d["blocks_stories"])
         self.assertEqual(out["decision_owner"], {"name": OWNER[0], "role": OWNER[1]})
@@ -134,7 +134,7 @@ class GapTriageActionTests(GapBase):
         self.assertEqual(p.gap("GAP-001")["status"], "OPEN", "only the chosen gap is presented")
         self.assertEqual(p.state["stage"], "WAITING_FOR_GAP_INPUT")
         self.assertEqual(self.events(p, "GAP_PRESENTED")[-1]["gap_ids"], ["GAP-002"])
-        self.assertIn("Carry Forward", pk["options"])
+        self.assertIn("Carry Forward", option_labels(pk))
 
     def test_viewing_a_deferred_gap_changes_nothing(self):
         p = self.seeded()
@@ -143,10 +143,11 @@ class GapTriageActionTests(GapBase):
         snap = (json.dumps(p.gaps(), sort_keys=True), len(p.audit_events()))
         pk = gapmod.next_gaps(p, 1, gap_id="GAP-001")["gaps"][0]
         self.assertEqual((json.dumps(p.gaps(), sort_keys=True), len(p.audit_events())), snap)
-        self.assertEqual((pk["status"], pk["deferral"]["reason"], pk["revisit_needed_to_answer"]), ("DEFERRED", "Waiting for Finance", True))
-        self.assertEqual(pk["options"], ["Other (type an answer or an instruction)", "Explain This Question", "Keep Deferred"])
-        self.assertEqual(pk["decision_owner"], {"name": OWNER[0], "role": OWNER[1]})
-        self.assertEqual(pk["impacted_requirements"][0]["id"], "REQ-006")
+        self.assertEqual((pk["status"], pk["revisit_needed_to_answer"]), ("DEFERRED", True))
+        self.assertEqual(option_labels(pk), ["Explain This Question", "Keep Deferred"])
+        self.assertIn("Waiting for Finance", pk["present"]["card"], "the deferral history is on the card")
+        self.assertFalse(pk["present"]["inline"], "a gap with history needs its card")
+        self.assertEqual(pk["impacted_requirement_ids"], ["REQ-006"])
 
     def test_viewing_a_carried_forward_gap_changes_nothing_and_offers_keep(self):
         p = self.seeded()
@@ -156,7 +157,7 @@ class GapTriageActionTests(GapBase):
         pk = gapmod.next_gaps(p, 1, gap_id="GAP-002")["gaps"][0]
         self.assertEqual(json.dumps(p.gaps(), sort_keys=True), snap)
         self.assertTrue(pk["revisit_needed_to_answer"])
-        self.assertEqual(pk["options"][-1], "Keep Carried Forward")
+        self.assertEqual(option_labels(pk)[-1], "Keep Carried Forward")
 
     def test_unknown_and_resolved_gaps_cannot_be_presented(self):
         p = self.seeded()
@@ -287,7 +288,7 @@ class StoryTriageListTests(StoryBase):
         self.assertEqual(out["eligible"], ["US-001", "US-002", "US-003"])
         by = {r["story_id"]: r for r in out["stories"]}
         self.assertEqual(by["US-002"]["last_review_note"]["note"], "criteria too vague")
-        self.assertEqual(by["US-002"]["location"], "stories/unapproved/md/US-002.md")
+        self.assertEqual(by["US-002"]["bucket"], "unapproved")
         self.assertEqual(by["US-003"]["deferral"]["reason"], "waiting for the policy team")
         self.assertTrue(by["US-003"]["deferral"]["at_ist"].endswith("+05:30"))
         self.assertEqual(by["US-001"]["requirement_ids"], ["REQ-001"])
@@ -315,7 +316,8 @@ class StoryTriageListTests(StoryBase):
         self.assertFalse(row["eligible"])
         self.assertEqual(out["not_eligible"], ["US-001"])
         self.assertTrue(any("GAP-001" in b for b in row["blockers"]), row["blockers"])
-        self.assertTrue(any("baseline is stale" in b for b in row["blockers"]), row["blockers"])
+        self.assertEqual([x["id"] for x in out["preflight"]], ["baseline_stale"], "shared problems are reported once, not per row")
+        self.assertFalse(any("baseline" in b for b in row["blockers"]), row["blockers"])
         self.assertEqual(row["status"], "DEFERRED", "deferred stories stay available for later review")
 
     def test_empty_queue(self):

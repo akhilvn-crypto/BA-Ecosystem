@@ -1,6 +1,6 @@
 ---
 name: quality-traceability
-description: Run deterministic and semantic quality checks - schema validation, source references, audit consistency, requirement-to-story traceability, orphan and duplicate detection, plus BRD change impact assessment. Use before presenting stories, before declaring completion, when status shows validation errors, or when the BRD file changed.
+description: Run schema, source-reference, audit and requirement-to-story traceability checks. Use before presenting stories, before completion, or when errors are reported.
 ---
 
 # Quality and traceability

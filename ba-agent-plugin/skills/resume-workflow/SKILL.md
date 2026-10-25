@@ -1,6 +1,6 @@
 ---
 name: resume-workflow
-description: Resume an interrupted or later-session BA workflow from saved artifacts - find the project, read status, repair interrupted writes, and continue from the right stage. Use when the user returns to an existing BA project folder or a previous session ended mid-way.
+description: Resume an interrupted or later-session BA workflow from saved artifacts - find the project, read status, repair interrupted writes, continue from the right stage.
 ---
 
 # Resume

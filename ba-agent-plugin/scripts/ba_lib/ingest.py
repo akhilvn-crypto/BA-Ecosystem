@@ -260,6 +260,28 @@ def section_text(text: str, sec: dict) -> str:
     return "\n".join(lines[sec["line_start"] - 1: sec["line_end"]])
 
 
+BATCH_CHARS = 12000      # about 3k tokens of BRD text per helper batch
+DELEGATE_ABOVE = 24000   # above this much BRD text, bulk reading belongs in helper agents, not the main session
+
+
+def outline_batches(meta: dict) -> dict:
+    """Section sizes and a batching plan, so the main session never has to read a large BRD itself: when `delegate` is
+    true, hand each batch of section IDs to a helper agent that returns a short summary and a file path."""
+    sizes = [(s["section_id"], s["title"], len(section_text(meta["text"], s))) for s in meta["sections"]]
+    batches, cur, used = [], [], 0
+    for sid, _, n in sizes:
+        if cur and used + n > BATCH_CHARS:
+            batches.append(cur)
+            cur, used = [], 0
+        cur.append(sid)
+        used += n
+    if cur:
+        batches.append(cur)
+    total = sum(n for _, _, n in sizes)
+    return {"outline": [{"id": sid, "title": t, "chars": n} for sid, t, n in sizes], "total_chars": total,
+            "delegate": total > DELEGATE_ABOVE, "batches": batches}
+
+
 def scan_injection(text: str) -> list[dict]:
     hits = []
     for n, ln in enumerate(text.split("\n"), 1):

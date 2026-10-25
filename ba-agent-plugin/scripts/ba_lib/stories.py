@@ -4,7 +4,7 @@ from __future__ import annotations
 import copy
 import re
 
-from . import conflicts, gaps as gapmod, storytrack
+from . import conflicts, gaps as gapmod, present, storytrack
 from .project import STORY_TRANSITIONS, check_transition, fault, physical
 from .util import BAError, ist_now_iso, normalize_ws, require_identity
 
@@ -214,15 +214,36 @@ def _hist(s, action, version, note=None, **extra):
 PENDING_BUCKETS = ("candidates", "unapproved", "deferred")
 
 
-def _blockers(p, s: dict, baseline_problem: str | None) -> list[str]:
-    """Why this story cannot be approved as it stands (the same rules `approve` enforces). Empty = approvable."""
+ORDER = {"IN_REVIEW": 0, "CANDIDATE": 1, "CHANGES_REQUESTED": 2, "DEFERRED": 3}
+
+
+def preflight(p) -> list[dict]:
+    """Problems that stop EVERY story from being approved (a stale baseline, a pending BRD impact review). Reported once,
+    with the step that clears them, instead of being repeated on each story."""
     out = []
-    if baseline_problem:
-        out.append(baseline_problem)
+    m = p.baseline_manifest()
+    latest = m["versions"][-1] if m["versions"] else None
+    if m["stale"]:
+        out.append({"id": "baseline_stale", "problem": f"the baseline is stale ({m.get('stale_reason')})",
+                    "action": "`baseline create`, show its change summary, and ask the approver to confirm it (`baseline confirm`); "
+                              "then run `story triage` again."})
+    elif not p.approved_baseline():
+        if latest and latest["status"] == "PROPOSED":
+            out.append({"id": "baseline_unconfirmed", "problem": f"baseline v{latest['version']} is proposed but not confirmed",
+                        "action": f"ask the approver to confirm baseline v{latest['version']} (`baseline confirm`)."})
+        else:
+            out.append({"id": "no_baseline", "problem": "no approved baseline",
+                        "action": "create and confirm a baseline (`baseline create`, then `baseline confirm`)."})
+    if p.state["impact_review"].get("pending"):
+        out.append({"id": "brd_impact_review", "problem": "a BRD change is awaiting impact review", "action": "run `/ba-agent:changes`."})
+    return out
+
+
+def _story_blockers(p, s: dict) -> list[str]:
+    """Why THIS story cannot be approved as it stands (the story-specific rules `approve` enforces)."""
+    out = []
     if (s.get("impact_review") or {}).get("pending"):
         out.append(f"flagged for impact review: {s['impact_review'].get('reason')}")
-    if p.state["impact_review"].get("pending"):
-        out.append("a BRD change is awaiting impact review")
     live = _derived(p, s["requirement_ids"])
     changed = [r for r in s["requirement_ids"] if live["requirement_versions"].get(r) != s["requirement_versions"].get(r)]
     if changed:
@@ -234,52 +255,74 @@ def _blockers(p, s: dict, baseline_problem: str | None) -> list[str]:
     return out
 
 
+def _pending(p) -> list[tuple[str, dict]]:
+    rows = [(b, s) for b, s in p.all_stories() if b in PENDING_BUCKETS]
+    rows.sort(key=lambda r: (ORDER.get(r[1]["status"], 9), r[1]["story_id"]))
+    return rows
+
+
 def triage(p) -> dict:
     """`story triage`: every story that is not yet approved - pending review, in review, not approved, deferred - with what
-    stops it being approved right now. Read-only: nothing is presented, moved or re-versioned."""
-    baseline_problem = None
-    if not p.approved_baseline():
-        baseline_problem = "no approved baseline"
-    elif p.baseline_manifest()["stale"]:
-        baseline_problem = "the baseline is stale"
-    order = {"IN_REVIEW": 0, "CANDIDATE": 1, "CHANGES_REQUESTED": 2, "DEFERRED": 3}
+    stops it being approved right now. Read-only: nothing is presented, moved or re-versioned. Problems shared by all stories
+    come back once as `preflight`; a row lists only its own blockers."""
+    pre = preflight(p)
     rows = []
-    for bucket, s in p.all_stories():
-        if bucket not in PENDING_BUCKETS:
-            continue
-        blockers = _blockers(p, s, baseline_problem)
+    for bucket, s in _pending(p):
+        blockers = _story_blockers(p, s)
         last = next((h for h in reversed(s["review_history"]) if h["action"] in ("CHANGES_REQUESTED", "DEFERRED")), None)
         rows.append({
             "story_id": s["story_id"], "version": s["version"], "title": s["title"], "status": s["status"], "bucket": bucket,
-            "location": physical(f"stories/{bucket}/{s['story_id']}.md"), "readiness": s.get("readiness"),
-            "requirement_ids": s["requirement_ids"], "open_gap_ids": _derived(p, s["requirement_ids"])["open_gap_ids"],
-            "deferral": s.get("deferral") if s["status"] == "DEFERRED" else None, "last_review_note": last and {"action": last["action"], "note": last.get("note"),
-                                                                       "at_ist": last["at_ist"]},
-            "impact_review": s.get("impact_review"), "eligible": not blockers, "blockers": blockers})
-    rows.sort(key=lambda r: (order.get(r["status"], 9), r["story_id"]))
+            "readiness": s.get("readiness"), "requirement_ids": s["requirement_ids"],
+            "open_gap_ids": _derived(p, s["requirement_ids"])["open_gap_ids"],
+            "deferral": s.get("deferral") if s["status"] == "DEFERRED" else None,
+            "last_review_note": last and {"action": last["action"], "note": last.get("note"), "at_ist": last["at_ist"]}, "blockers": blockers, "eligible": not blockers and not pre})
     counts = {k: sum(1 for r in rows if r["bucket"] == b) for k, b in (("pending_review", "candidates"),
               ("not_approved", "unapproved"), ("deferred", "deferred"))}
-    return {"stories": rows, "total": len(rows), "counts": counts,
+    summary = None
+    if rows:
+        summary = (f"{len(rows)} story(ies): " + " · ".join(f"{n} {w}" for w, n in (("pending review", counts["pending_review"]),
+                   ("not approved", counts["not_approved"]), ("deferred", counts["deferred"])) if n)
+                   + (". Clear first: " + "; ".join(x["problem"] for x in pre) if pre else "")
+                   + ". Order: " + ", ".join(r["story_id"] for r in rows[:15]) + (f", +{len(rows) - 15} more" if len(rows) > 15 else ""))
+    return {"stories": rows, "total": len(rows), "counts": counts, "summary": summary, "preflight": pre,
             "eligible": [r["story_id"] for r in rows if r["eligible"]],
             "not_eligible": [r["story_id"] for r in rows if not r["eligible"]],
-            "next": "Present the stories one at a time in this order: `story next --id US-00x`." if rows
-                    else "No unapproved stories."}
+            "eligible_after_preflight": [r["story_id"] for r in rows if not r["blockers"]] if pre else [],
+            "next": ("No unapproved stories." if not rows else
+                     "Clear `preflight` first (one dialog), then present the stories one at a time: `story next --id US-00x`." if pre else
+                     "Present the stories one at a time in this order: `story next --id US-00x`.")}
 
 
-def next_story(p, story_id: str | None = None, deferred: bool = False, batch: int = 1, unapproved: bool = False) -> dict:
+def _update_context(p, s: dict) -> list[dict]:
+    """For a story flagged because a gap it names was resolved: the decision to apply (right information, only when needed)."""
+    gmap = {g["gap_id"]: g for g in p.gaps()}
+    decs = p.decisions()
+    out = []
+    for u in s.get("unresolved_decisions") or []:
+        g = gmap.get(u["gap_id"])
+        if g and g["status"] == "RESOLVED" and g.get("decision_id") in decs:
+            out.append({"gap_id": g["gap_id"], "decision_id": g["decision_id"],
+                        "interpretation": decs[g["decision_id"]]["validated_interpretation"]})
+    return out
+
+
+def next_story(p, story_id: str | None = None, deferred: bool = False, batch: int = 1, unapproved: bool = False,
+               full: bool = False) -> dict:
     buckets = ("deferred",) if deferred else ("unapproved",) if unapproved else ("candidates",)
-    pool = [s for b, s in p.all_stories() if b in buckets]
+    pool = [(b, s) for b, s in p.all_stories() if b in buckets]
+    position = None
     if story_id:
-        _, one = _load(p, story_id, PENDING_BUCKETS + ("approved",))
-        pool = [one]
+        pool = [_load(p, story_id, PENDING_BUCKETS + ("approved",))]
+        order = [x["story_id"] for _, x in _pending(p)]
+        if story_id in order:
+            position = f"{order.index(story_id) + 1} of {len(order)}"
     elif unapproved and not pool:
         return {"stories": [], "remaining": 0, "note": "No unapproved stories."}
-    order = {"IN_REVIEW": 0, "CANDIDATE": 1, "CHANGES_REQUESTED": 2, "DEFERRED": 3}
-    pool.sort(key=lambda s: (order.get(s["status"], 9), s["story_id"]))
+    pool.sort(key=lambda r: (ORDER.get(r[1]["status"], 9), r[1]["story_id"]))
     chosen = pool[:max(1, batch)]
     if not chosen:
         return {"stories": [], "remaining": 0, "note": "No stories awaiting review."}
-    for s in chosen:
+    for _, s in chosen:
         if s["status"] == "CANDIDATE":
             check_transition(STORY_TRANSITIONS, "Story", "CANDIDATE", "IN_REVIEW")
             s["status"] = "IN_REVIEW"
@@ -288,14 +331,22 @@ def next_story(p, story_id: str | None = None, deferred: bool = False, batch: in
     if p.state["stage"] == "STORIES_READY":
         p.set_stage("WAITING_FOR_STORY_REVIEW", "story-review-started")
     live = {r["requirement_id"]: r for r in p.requirements()}
+    pre = preflight(p)
     out = []
-    for s in chosen:
-        d = dict(s)
-        d["live_open_gap_ids"] = _derived(p, s["requirement_ids"])["open_gap_ids"]
-        d["requirement_statements"] = {r: live[r]["statement"] for r in s["requirement_ids"] if r in live}
-        out.append(d)
-    return {"stories": out, "remaining": len(pool) - len(chosen),
-            "options": ["approve", "suggest changes (free text)", "not approved", "defer"] + (["continue deferring"] if deferred else [])}
+    for i, (bucket, s) in enumerate(chosen):
+        derived = _derived(p, s["requirement_ids"])
+        blockers = ([x["problem"] for x in pre] + _story_blockers(p, s)) if bucket != "approved" else []
+        upd = _update_context(p, s) if (s.get("impact_review") or {}).get("pending") else []
+        pos = position or (f"{i + 1} of {len(chosen)}" if len(chosen) > 1 else None)
+        view = present.story_view(s, {"blockers": blockers, "bucket": bucket, "live_gaps": derived["open_gap_ids"],
+                                      "update_ctx": upd, "position": pos})
+        item = {"story_id": s["story_id"], "version": s["version"], "status": s["status"], "bucket": bucket,
+                "readiness": s.get("readiness"), "eligible": not blockers, "blockers": blockers, "present": view}
+        if full:
+            item["story"] = dict(s, live_open_gap_ids=derived["open_gap_ids"],
+                                 requirement_statements={r: live[r]["statement"] for r in s["requirement_ids"] if r in live})
+        out.append(item)
+    return {"stories": out, "remaining": len(pool) - len(chosen)}
 
 
 def request_changes(p, sid: str, version: int, note: str) -> dict:

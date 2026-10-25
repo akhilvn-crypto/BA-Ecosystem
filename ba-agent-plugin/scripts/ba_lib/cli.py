@@ -28,6 +28,27 @@ GUARDED = {("req", "add"), ("req", "commit"), ("gaps", "add"), ("gaps", "commit"
 CHECKED = {("gaps", "triage"), ("story", "triage"), ("complete", None), ("report", None)}
 
 
+# Collections a caller always expects to find, even when empty; every other empty value is dropped from the output.
+# `candidate_conflicts` stays explicit so "checked, none found" is never confused with "field missing".
+KEEP_EMPTY = {"gaps", "stories", "changes", "requirements", "outstanding", "errors", "results", "candidate_conflicts"}
+
+
+def prune(o, top=False):
+    """Drop null / empty values from CLI output: absent means none. Booleans and zeros are always kept."""
+    if isinstance(o, dict):
+        r = {k: prune(v) for k, v in o.items()}
+        return {k: v for k, v in r.items() if not (v is None or v == "" or v == {} or (v == [] and not (top and k in KEEP_EMPTY)))}
+    if isinstance(o, list):
+        return [prune(x) for x in o]
+    return o
+
+
+def dumps(o, pretty: bool = False) -> str:
+    if pretty:
+        return json.dumps(o, indent=2, ensure_ascii=False, default=str)
+    return json.dumps(o, ensure_ascii=False, separators=(",", ":"), default=str)
+
+
 def _csv(v):
     return [x.strip() for x in v.split(",") if x.strip()] if isinstance(v, str) else (v or [])
 
@@ -54,6 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="ba.py", description="Interactive BA plugin — deterministic workflow core")
     ap.add_argument("--root", help="project folder (or env BA_PROJECT_ROOT, or cwd if it is a project)")
     ap.add_argument("--args-file", help="JSON file supplying option values (avoids shell quoting)")
+    ap.add_argument("--pretty", action="store_true", help="indent the JSON output (default is compact: it costs fewer tokens)")
     sub = ap.add_subparsers(dest="group", required=True)
 
     def grp(name, actions):
@@ -121,7 +143,8 @@ def build_parser() -> argparse.ArgumentParser:
                      "confirm": [opt("--version", type=int), opt("--by-name"), opt("--by-role"), opt("--statement")],
                      "show": [opt("--version", type=int)]})
     grp("story", {"add": [opt("--file")], "show": [pos("id")], "gaps": [opt("--requirements")], "triage": [], "keep": [pos("id")],
-                  "next": [opt("--id"), opt("--deferred", action="store_true"), opt("--unapproved", action="store_true"), opt("--batch", type=int, default=1)],
+                  "next": [opt("--id"), opt("--deferred", action="store_true"), opt("--unapproved", action="store_true"), opt("--batch", type=int, default=1),
+                           opt("--full", action="store_true")],
                   "approve": [pos("id"), opt("--version", type=int), opt("--statement"), opt("--approver-name"), opt("--approver-role")],
                   "edit": [pos("id"), opt("--file"), opt("--reason")],
                   "defer": [pos("id"), opt("--version", type=int), opt("--reason")], "revisit": [pos("id")],
@@ -161,7 +184,9 @@ def run(a) -> dict | str:
         if done and isinstance(out, dict):
             out["changes_reconciled"] = done
     if p is not None and isinstance(out, dict) and a.group not in ("status", "validate", "trace", "files")             and getattr(a, "action", None) not in READ_ONLY:
-        out["files_saved"] = p.receipt()  # proof of what is on disk and where to open it; relay these folders to the user
+        saved = p.receipt(since=getattr(a, "_before", None))  # proof of what this command wrote and where to open it
+        if saved:
+            out["files_saved"] = saved
     return out
 
 
@@ -181,9 +206,11 @@ def _run(a):
                 "source": {"format": meta["format"], "fingerprint": meta["fingerprint"], "sections": len(meta["sections"]),
                            "parser": meta["parser"]},
                 "warnings": meta["warnings"], "instruction_like_lines": len(meta["injection_suspects"]),
-                "outline": [{"id": s["section_id"], "title": s["title"], "lines": [s["line_start"], s["line_end"]]} for s in meta["sections"]],
-                "next": "Decompose the BRD into atomic requirements (`req add`)."}
+                **ingest.outline_batches(p.load_source(verify=False)),
+                "next": "Decompose the BRD into atomic requirements (`req add`). If `delegate` is true, give each batch of sections "
+                        "to a `ba-agent:requirement-analyst` helper (in parallel) instead of reading the BRD here."}
     p = _open(a)
+    a._before = p._dir_sig()
     key = (g, act if (g, act) in GUARDED or (g, act) in CHECKED else None)
     checked = None
     if key in GUARDED:
@@ -238,7 +265,7 @@ def _dispatch(a, p, g, act):
             return reqmod.source_section(p, a.section_id, a.allow_changed)
         if act == "history":
             return snapshots.index(p)
-        return {"outline": p.source_metadata()["sections"]}
+        return ingest.outline_batches(p.load_source(verify=False))
     if g == "req":
         if act == "add":
             return reqmod.add_requirements(p, _json_file(a.file))
@@ -326,7 +353,7 @@ def _dispatch(a, p, g, act):
         if act == "add":
             return storymod.add_stories(p, _json_file(a.file))
         if act == "next":
-            return storymod.next_story(p, a.id, a.deferred, a.batch, a.unapproved)
+            return storymod.next_story(p, a.id, a.deferred, a.batch, a.unapproved, a.full)
         if act == "show":
             return storymod._load(p, a.id)[1]
         if act == "triage":
@@ -371,14 +398,12 @@ def main(argv: list[str] | None = None) -> int:
         if isinstance(out, str):
             print(out)
         else:
-            print(json.dumps({"ok": True, **out} if isinstance(out, dict) else {"ok": True, "result": out},
-                             indent=2, ensure_ascii=False))
+            print(dumps(prune({"ok": True, **out}, True) if isinstance(out, dict) else {"ok": True, "result": out}, ns.pretty))
         return 0
     except BAError as e:
-        print(json.dumps({"ok": False, "error": {"code": e.code, "message": e.message, "details": e.details}},
-                         indent=2, ensure_ascii=False, default=str))
+        print(dumps({"ok": False, "error": {"code": e.code, "message": e.message, "details": e.details}}, ns.pretty))
         return 1
     except Exception as e:  # pragma: no cover - defensive
-        print(json.dumps({"ok": False, "error": {"code": "INTERNAL_ERROR", "message": f"{type(e).__name__}: {e}",
-                                                 "trace": traceback.format_exc(limit=4)}}, indent=2, ensure_ascii=False))
+        print(dumps({"ok": False, "error": {"code": "INTERNAL_ERROR", "message": f"{type(e).__name__}: {e}",
+                                            "trace": traceback.format_exc(limit=4)}}, ns.pretty))
         return 3

@@ -1,6 +1,6 @@
 ---
 name: requirement-analyst
-description: Optional helper that decomposes a range of BRD sections into atomic requirements JSON (verbatim source quotes, section IDs, assumptions flagged). Use for large BRDs to keep the main context small.
+description: Optional helper that decomposes a range of BRD sections into atomic requirements JSON (verbatim source quotes, section IDs, assumptions flagged). Use when `source outline` returns `delegate - true` - one batch of section IDs per call, run in parallel.
 tools: Read, Grep, Glob, Bash
 ---
 

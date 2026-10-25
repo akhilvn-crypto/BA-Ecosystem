@@ -17,12 +17,16 @@ Turn a Business Requirements Document (BRD) into **traceable atomic requirements
 
 Everything is resumable: state, decisions and the audit trail live in the project folder, not in the chat.
 
+## Built to stay cheap in tokens
+
+Each stage reads only what it needs. Skills are short loops with on-demand `references/`; the core builds the choice dialog and card for each gap or story so the model relays them instead of writing them (a gap whose dialog says everything is sent as the dialog alone, queues as one summary line); CLI results are compact and omit empty fields; large BRDs are batched out to helper agents. A gap session loads ~10 KB of instructions instead of ~40 KB, and typical CLI results are 26-82% smaller. Details: [Architecture → Context engineering](docs/ARCHITECTURE.md); reproduce with `python -m tests.measure_efficiency`.
+
 ## Install and run
 
 **Claude Code CLI** (tested): `claude --plugin-dir /path/to/ba-agent-plugin` (one session), then `/ba-agent:start path/to/BRD.docx`.
 Persistent (not run here, as it changes your Claude config): from the folder that contains `.claude-plugin/marketplace.json` (`D:\BA-Agents`) run `claude plugin marketplace add ./` then `claude plugin install ba-agent@ba-agents`.
 
-**Claude Cowork** (not verified in this environment): build the upload file with `python scripts/package_plugin.py` → `dist/ba-agent-1.7.0.zip`, then *Customize → Plugins → Add → Upload plugin*. Commands appear as `/ba-agent:start` etc. Cowork's local-folder and script-execution behaviour is not documented well enough to claim support — see the compatibility report.
+**Claude Cowork** (not verified in this environment): build the upload file with `python scripts/package_plugin.py` → `dist/ba-agent-1.8.0.zip`, then *Customize → Plugins → Add → Upload plugin*. Commands appear as `/ba-agent:start` etc. Cowork's local-folder and script-execution behaviour is not documented well enough to claim support — see the compatibility report.
 
 Commands: `/ba-agent:start [BRD or project folder]` · `/ba-agent:status` · `/ba-agent:review` · `/ba-agent:triage-gaps` · `/ba-agent:triage-stories` · `/ba-agent:changes`. You normally only need `start`.
 
@@ -33,7 +37,7 @@ Python 3.9+ on the machine that runs the plugin (standard library only — **not
 ## Develop / test
 
 ```
-python -m unittest discover -s tests -t . -v      # run from this folder; 249 tests
+python -m unittest discover -s tests -t . -v      # run from this folder; 276 tests
 claude plugin validate .                            # manifest, skills, agents, commands
 ```
 

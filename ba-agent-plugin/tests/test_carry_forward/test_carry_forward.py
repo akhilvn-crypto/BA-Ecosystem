@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from tests.helpers import BATest, basemod, checks, gapmod, stories
+from tests.helpers import BATest, basemod, checks, gapmod, option_labels, stories
 from ba_lib.project import Project
 from ba_lib.util import BAError
 
@@ -293,10 +293,9 @@ class SuggestedAnswerAndOtherTests(Base):
         gapmod.add_gaps(p, items)
         self.set_owner(p)
         by_id = {g["gap_id"]: g for g in gapmod.next_gaps(p, 3)["gaps"]}
-        self.assertEqual(by_id["GAP-002"]["options"], ["Suggested Answer", "Other (type an answer or an instruction)",
-                                                       "Explain This Question", "Carry Forward"])
-        self.assertNotIn("Suggested Answer", by_id["GAP-001"]["options"], "HIGH/material gaps use the original four options")
-        self.assertEqual(by_id["GAP-001"]["options"][-2:], ["Answer Later", "Defer This Gap"])
+        self.assertEqual(option_labels(by_id["GAP-002"]), ["Suggested Answer", "Explain This Question", "Carry Forward"])
+        self.assertNotIn("Suggested Answer", option_labels(by_id["GAP-001"]), "HIGH/material gaps never offer a suggestion shortcut")
+        self.assertEqual(option_labels(by_id["GAP-001"])[-2:], ["Answer Later", "Defer This Gap"])
 
     def test_choosing_the_suggestion_records_it_as_the_humans_validated_answer(self):
         p = self.with_requirements()
@@ -711,7 +710,7 @@ class CliTests(BATest):
         self.assertEqual(out["carry_forward"]["reason"], 'Infra to confirm "later"')
         self.assertEqual([g["carried_forward"] for g in self.run_ba(root, "gaps", "list")["gaps"]], [False, True, False])
         nxt = self.run_ba(root, "gaps", "next", "--carried")
-        self.assertEqual(nxt["gaps"][0]["options"][0], "Suggested Answer")
+        self.assertEqual(option_labels(nxt["gaps"][0])[0], "Suggested Answer")
         ans = self.run_ba(root, "gap", "answer", "GAP-002", "--use-suggestion")
         self.assertEqual(ans["basis"], "SUGGESTED_ANSWER")
         st = self.run_ba(root, "story", "gaps", "--requirements", "REQ-008,REQ-001")

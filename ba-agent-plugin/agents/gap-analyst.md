@@ -1,6 +1,6 @@
 ---
 name: gap-analyst
-description: Optional helper that analyses a batch of requirements for gaps (missing, ambiguous, conflicting, untestable) and drafts evidence-based gaps with one focused question each. Use for large requirement sets.
+description: Optional helper that analyses a batch of requirements for gaps (missing, ambiguous, conflicting, untestable) and drafts evidence-based gaps with one focused question each. Use for more than about ten requirements - one batch of requirement IDs per call, run in parallel.
 tools: Read, Grep, Glob, Bash
 ---
 

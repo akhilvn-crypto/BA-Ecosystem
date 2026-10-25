@@ -6,7 +6,7 @@ import unittest
 from datetime import timedelta
 from pathlib import Path
 
-from tests.helpers import BATest, FakeClock, CLOCK_START, checks, gapmod, projmod, util
+from tests.helpers import BATest, FakeClock, CLOCK_START, checks, gapmod, option_labels, projmod, util
 from ba_lib.project import Project
 from ba_lib.util import BAError
 
@@ -44,13 +44,11 @@ class PromptOptionTests(Base):
         by_id = {g["gap_id"]: g for g in gapmod.next_gaps(p, 3)["gaps"]}
         # HIGH / material gaps keep the original four options and cannot be carried forward
         for gid in ("GAP-001", "GAP-003"):
-            self.assertEqual(by_id[gid]["options"], ["Other (type an answer or an instruction)", "Explain This Question",
-                                                     "Answer Later", "Defer This Gap"], gid)
+            self.assertEqual(option_labels(by_id[gid]), ["Explain This Question", "Answer Later", "Defer This Gap"], gid)
             self.assertFalse(by_id[gid]["carry_forward_allowed"])
             self.assertTrue(by_id[gid]["carry_forward_not_allowed_because"])
         # a MEDIUM, non-material gap without evidence-backed suggestion: Other / Explain / Carry Forward
-        self.assertEqual(by_id["GAP-002"]["options"], ["Other (type an answer or an instruction)", "Explain This Question",
-                                                       "Carry Forward"])
+        self.assertEqual(option_labels(by_id["GAP-002"]), ["Explain This Question", "Carry Forward"])
         self.assertTrue(by_id["GAP-002"]["carry_forward_allowed"])
 
     def test_suggested_answer_only_when_evidence_backed(self):

@@ -1,6 +1,6 @@
 ---
 name: gap-analysis
-description: Find missing, ambiguous, conflicting, inconsistent or untestable information in the requirements, record evidence-based gaps with priority and one focused question each, and run a cross-requirement pass. Use when the stage is REQUIREMENTS_READY or GAP_ANALYSIS, or when requirements changed and need re-analysis.
+description: Find missing, ambiguous, conflicting or untestable information in the requirements and record evidence-based gaps with priority and one question each. Use when the stage is REQUIREMENTS_READY or GAP_ANALYSIS.
 ---
 
 # Gap analysis
@@ -19,6 +19,6 @@ Save as JSON (`state/inbox/gaps.json`) → `gaps add --file …` → when both p
 
 Do **not** present gaps to the user here, and never before the decision owner is known — that is `gap-resolution` (the core refuses `gaps next` without an owner).
 
-For large requirement sets you may use the optional `ba-agent:gap-analyst` agent per batch of requirements (it writes JSON and returns a short summary; you run `gaps add`).
+For more than about ten requirements, give batches of requirement IDs to `ba-agent:gap-analyst` helpers (in parallel) instead of analysing them here: each writes JSON under `state/inbox/` and returns at most 8 lines; you run `gaps add`.
 
 Re-analysis after requirement changes: only the changed or flagged requirements, then `gaps commit` again.

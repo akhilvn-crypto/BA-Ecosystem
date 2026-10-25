@@ -1,6 +1,6 @@
 ---
 name: brd-ingestion
-description: Select the BRD and project folder, verify access, detect the file format, and initialise the BA project with a content fingerprint and a section outline. Use at the very start of the BA workflow or when the user supplies a new or changed BRD.
+description: Select the BRD and project folder, verify access, and initialise the BA project with a fingerprint and section outline. Use at the start or when a new BRD is supplied.
 ---
 
 # BRD ingestion

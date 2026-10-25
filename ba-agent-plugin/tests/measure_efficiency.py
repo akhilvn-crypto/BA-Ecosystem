@@ -5,10 +5,14 @@ available here; real token usage must come from the host (see docs/TEST_REPORT.m
 
     python -m tests.measure_efficiency
 """
+import contextlib
+import io
 import json
+import re
 import time
 
-from tests.helpers import BATest, FIXTURE, basemod, checks, gapmod, reqs, stories
+from tests.helpers import PLUGIN, BATest, FIXTURE, basemod, checks, gapmod, reqs, stories
+from ba_lib import cli
 
 
 class Measure(BATest):
@@ -44,9 +48,47 @@ class Measure(BATest):
                                 "reassessed_fraction": f"{len(ch['affected_requirement_ids']) / len(p.req_ids()):.0%}",
                                 "sections_changed": len(ch["diff"]["changed"]), "sections_unchanged": len(ch["diff"]["unchanged"]),
                                 "ms": round((time.perf_counter() - t) * 1000, 1)}
+        out["prompt_surface_bytes"] = self.prompt_surface()
+        out["cli_output_bytes"] = self.cli_outputs()
         out["model_calls_made_by_core"] = 0
         out["artifact_bytes_total"] = sum(f.stat().st_size for f in p.root.rglob("*") if f.is_file())
         return out
+
+
+    @staticmethod
+    def prompt_surface() -> dict:
+        """Bytes of instructions a model loads per stage (skills and references are read only when their branch is reached)."""
+        size = lambda *names: sum((PLUGIN / n).stat().st_size for n in names)
+        sk = lambda n: f"skills/{n}/SKILL.md"
+        descs = sum(len(re.search(r"^description: (.*)$", f.read_text(encoding="utf-8"), re.M).group(1)) for f in PLUGIN.glob("skills/*/SKILL.md"))
+        return {
+            "skill_descriptions_always_loaded_chars": descs,
+            "gap_session": size(sk("ba-workflow"), sk("gap-resolution")),
+            "gap_session_with_validate_and_actions": size(sk("ba-workflow"), sk("gap-resolution"), "skills/gap-resolution/references/validate-and-resolve.md",
+                                                           "skills/gap-resolution/references/actions.md"),
+            "story_session": size(sk("ba-workflow"), sk("story-review")),
+            "triage_gaps_command": size("commands/triage-gaps.md", sk("ba-workflow"), sk("gap-resolution"), "skills/gap-resolution/references/triage.md"),
+            "triage_stories_command": size("commands/triage-stories.md", sk("ba-workflow"), sk("story-review"), "skills/story-review/references/triage.md"),
+        }
+
+    def cli_outputs(self) -> dict:
+        """Bytes of the CLI results a model reads while working one gap and one story."""
+        from tests.test_context.test_context import Flow
+        f = Flow()
+        f.setUp()
+        try:
+            p = f.after_gap_triage()
+            sizes = {}
+            for label, argv in (("gaps_triage", ("gaps", "triage")), ("story_triage", ("story", "triage")),
+                                ("story_next", ("story", "next", "--id", "US-003")), ("baseline_create", ("baseline", "create")),
+                                ("status", ("status",))):
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    cli.main(["--root", str(p.root), *argv])
+                sizes[label] = len(buf.getvalue().encode("utf-8"))
+            return sizes
+        finally:
+            f._cleanup()
 
 
 if __name__ == "__main__":

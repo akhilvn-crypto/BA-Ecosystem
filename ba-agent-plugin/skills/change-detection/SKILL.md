@@ -1,6 +1,6 @@
 ---
 name: change-detection
-description: Detect changes to the BRD or to approved user stories (edited by a person or by the BA Agent), explain their downstream impact before anything is updated, tell material changes from formatting-only ones, and walk the review until every affected artifact is reconciled. Use when the pipeline starts or resumes, before gap or story triage, before writing updated artifacts, when `status` shows a change, or when the user says the BRD or a story was edited.
+description: Detect and explain changes to the BRD or approved stories before anything is updated; walk the review until every affected artifact is reconciled. Load only when `changes check` reports a change.
 ---
 
 # Change detection and impact analysis

@@ -19,6 +19,11 @@ FIXTURE = PLUGIN / "tests" / "fixtures" / "brd_library.md"
 CLOCK_START = datetime(2026, 10, 22, 13, 15, 0, tzinfo=timezone.utc)
 
 
+def option_labels(packet: dict) -> list[str]:
+    """Labels of the choice dialog the core built for a gap or story packet."""
+    return [o["label"] for o in packet["present"]["dialog"]["options"]]
+
+
 class FakeClock:
     def __init__(self, start=CLOCK_START):
         self.t = start

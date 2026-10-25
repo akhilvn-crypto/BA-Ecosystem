@@ -3,12 +3,13 @@
 **Date:** 2026-10-22 (IST) · **Environment:** Windows 10 Pro 10.0.19045, Python 3.14.8, Claude Code CLI 2.1.308, Git Bash + PowerShell.
 **Not available / not run:** Claude Cowork, claude.ai chat, macOS/Linux, Python < 3.14 (see "Tests not run").
 
-## 1. Automated tests — 249 run, 248 passed, 1 skipped, 0 failed (re-run 2026-10-23 for 1.7.0)
+## 1. Automated tests — 276 run, 275 passed, 1 skipped, 0 failed (re-run 2026-10-25 for 1.8.0)
 
-Command (from the plugin folder): `python -m unittest discover -s tests -t . -v` → `Ran 249 tests in ~120s — OK (skipped=1)` (Python 3.14.8, Windows 10). 1.7.0 added 5 tests in `test_carry_forward/` (bulk carry-forward: offer hint, per-gap records and audit, identity/owner/nothing-to-carry refusals, material gaps skipped, CLI). The 235 tests that existed before 1.6.0 all still pass (only their file paths were updated for the `md/` + `json/` layout); the 9 new tests are in `test_layout/` (path mapping, populated `md/` and `json/` folders at every stage, saved-files receipt, migration of a flat project, no overwrite of a conflicting loose file, CLI `files_saved` and `files`). Per-file counts of older areas were last measured at the version noted in their row.
+Command (from the plugin folder): `python -m unittest discover -s tests -t . -v` → `Ran 276 tests in ~155s — OK (skipped=1)` (Python 3.14.8, Windows 10). 1.7.0 added 5 tests in `test_carry_forward/` (bulk carry-forward: offer hint, per-gap records and audit, identity/owner/nothing-to-carry refusals, material gaps skipped, CLI). The 235 tests that existed before 1.6.0 all still pass (only their file paths were updated for the `md/` + `json/` layout); the 9 new tests are in `test_layout/` (path mapping, populated `md/` and `json/` folders at every stage, saved-files receipt, migration of a flat project, no overwrite of a conflicting loose file, CLI `files_saved` and `files`). Per-file counts of older areas were last measured at the version noted in their row.
 
 | Area (file) | Tests | Covers |
 |---|---|---|
+| `test_context` | 27 | 1.8.0: presentation built by the core (inline vs card, dialog limits, suggestion shown with its source, eligibility-aware story options), the triage-stories dead end (shared `preflight`, `Update story` with the decision to apply, no `Approve` while blocked), lean packets, compact JSON and pruning, per-command `files_saved`, BRD batching for helper agents, YAML-safe frontmatter, dangling-reference detection, byte budgets for prompt files and CLI results |
 | `test_schemas` | 14 | validator, record schemas (requirement/gap/state), stable unique IDs, IST format + clock refusal, fingerprints |
 | `test_state_transitions` | 22 | stage/gap/story transition rules, **decision-owner gate (spec test 16)**, **closure audit with exact IST (17)**, **closure blocked without identity (18)**, **conflicting answers (19)**, **confirmed change keeps prior versions + triggers impact review (20)**, material-gap owner confirmation, per-gap owner override |
 | `test_traceability` | 18 | baseline policy (strict blocking, explicit non-blocking policy), baseline versioning/reuse, story validation, approve/edit/defer/revisit (spec 9, 10), **blocked requirement cannot become a story (14)**, **orphan/duplicate/dangling (15)**, coverage, completion only when all approved, tamper detection |
@@ -84,3 +85,29 @@ No before/after optimisation comparison was run, so **no reduction percentage is
 ## 6. Tests not run
 
 Cowork; claude.ai chat; macOS/Linux; Python 3.9–3.13; symlink-escape on a privileged Windows session or POSIX; very large BRDs (>100 sections) and performance at scale; multi-user concurrent access; real human-in-the-loop sessions.
+
+
+## 1.8.0 efficiency measurements (reproduce with `python -m tests.measure_efficiency`)
+
+Bytes only (the core makes no model calls); roughly 4 bytes per token. Before = 1.7.0 (`git show HEAD`), after = 1.8.0, same scenario.
+
+| Instructions loaded | Before | After |
+|---|---|---|
+| Gap session (router + gap skill + the references it needed) | 40.3 KB | 10.6 KB (17.9 KB when the validate and action references are also opened) |
+| Story session | 29.5 KB | 10.7 KB |
+| `/ba-agent:triage-gaps` | 43.1 KB | 14.6 KB |
+| `/ba-agent:triage-stories` | 32.1 KB | 17.5 KB |
+| Skill descriptions (always in context) | 3,702 chars | 1,927 chars |
+
+| CLI result a model reads | Before | After |
+|---|---|---|
+| `owner set` | 1,150 B | 307 B |
+| `gaps triage` (3 gaps) | 2,208 B | 848 B |
+| `gaps next --id` (card + dialog included) | 2,563 B | 1,821 B |
+| `gap answer` | 1,232 B | 436 B |
+| `gap resolve` | 1,625 B | 709 B |
+| `story triage` (5 stories) | 3,417 B | 1,795 B |
+| `story next --id` (card + dialog included) | 2,753 B | 2,051 B |
+| `baseline create` | 2,169 B | 397 B |
+
+Not measured here: real token counts and the text the model writes in chat (the host reports those); the saving from not composing a card or table by hand is on top of the above. `claude plugin validate .` passes (the LICENSE and icon notes of the directory profile are unchanged).

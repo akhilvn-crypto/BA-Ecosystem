@@ -7,7 +7,7 @@ import re
 import uuid
 from datetime import datetime
 
-from . import conflicts, reqs
+from . import conflicts, present, reqs
 from .project import GAP_TRANSITIONS, check_transition, fault
 from .util import (BAError, append_jsonl, atomic_write_text, ist_now_iso, normalize_ws, now_ist, read_jsonl,
                    require_identity, same_person)
@@ -241,39 +241,21 @@ def _explanation(p, g: dict, reqmap: dict) -> dict:
     }
 
 
-def _options(p, g: dict) -> list[str]:
-    if g["status"] == "DEFERRED":
-        return ["Other (type an answer or an instruction)", "Explain This Question", "Keep Deferred"]
-    if g["status"] == "OPEN" and g.get("carry_forward"):
-        return ["Other (type an answer or an instruction)", "Explain This Question", "Keep Carried Forward"]
-    if carry_forward_blocker(p, g):
-        return ["Other (type an answer or an instruction)", "Explain This Question", "Answer Later", "Defer This Gap"]
-    opts = ["Suggested Answer"] if g.get("suggested_answer") else []
-    return opts + ["Other (type an answer or an instruction)", "Explain This Question", "Carry Forward"]
-
-
-def _packet(p, g: dict, reqmap: dict) -> dict:
-    owner = effective_owner(p, g)
+def _packet(p, g: dict, reqmap: dict, left: int = 0) -> dict:
+    """What the model needs to act on ONE gap. Everything the human reads (evidence, impacted requirements, earlier answers,
+    deferral history) lives in `present` - built once, never duplicated here; `gap explain` carries the plain-language facts."""
     blocker = carry_forward_blocker(p, g)
+    blocks = blocks_requirements(p, g)
+    view = present.gap_view(g, {"reqmap": reqmap, "blocks_stories": blocks, "carry_ok": blocker is None, "blocker_why": blocker,
+                                "left": left, "story_ids": _story_ids_for(p, g)})
     return {
-        "gap_id": g["gap_id"], "category": g["category"], "priority": g["priority"], "title": g["title"],
-        "status": g["status"], "question": g["question"], "evidence": g["evidence"], "why_it_matters": g["why_it_matters"],
-        "material": g["material"], "decision_owner": owner and {"name": owner["name"], "role": owner["role"]},
-        "impacted_requirements": [{"id": r, "title": reqmap[r]["title"], "statement": reqmap[r]["statement"],
-                                   "source": reqmap[r]["source_reference"]} for r in g["impacted_requirement_ids"] if r in reqmap],
-        "previous_answers": [{"answer_id": a["answer_id"], "response": a["response"], "assessment": a.get("assessment"),
-                              "note": a.get("assessment_note")} for a in g["answers"]],
-        "open_conflicts": [c for c in g["conflicts"] if c["status"] == "OPEN"],
-        "needs_impact_review": g.get("needs_impact_review", False),
+        "gap_id": g["gap_id"], "priority": g["priority"], "status": g["status"], "question": g["question"],
+        "material": bool(g["material"]), "impacted_requirement_ids": g["impacted_requirement_ids"],
+        "blocks_stories": blocks, "carry_forward_allowed": blocker is None, "carry_forward_not_allowed_because": blocker,
         "suggested_answer": g.get("suggested_answer"),
-        "blocks_stories": blocks_requirements(p, g),
-        "carry_forward_allowed": blocker is None, "carry_forward_not_allowed_because": blocker,
-        "stories_linked_to_requirements": _story_ids_for(p, g),
-        "explain": _explanation(p, g, reqmap),
-        "options": _options(p, g),
         "defer_requires_revisit_date": g["priority"] in p.state["policy"].get("deferral_revisit_required_priorities", []),
-        "deferral": g.get("deferral"), "carry_forward": g.get("carry_forward"), "skipped_count": g["skipped_count"],
         "revisit_needed_to_answer": g["status"] == "DEFERRED" or bool(g["status"] == "OPEN" and g.get("carry_forward")),
+        "present": view,
     }
 
 
@@ -301,23 +283,28 @@ def triage(p, status: str | None = None) -> dict:
         kind = "DEFERRED" if g["status"] == "DEFERRED" else "OPEN"
         if group and kind != group:
             continue
-        owner = effective_owner(p, g)
         d = g.get("deferral") or {}
         rows.append({
             "gap_id": g["gap_id"], "priority": g["priority"], "status": g["status"], "triage_group": kind,
-            "carried_forward": bool(g.get("carry_forward")), "material": bool(g.get("material")), "title": g["title"],
-            "question": g["question"], "decision_owner": owner and {"name": owner["name"], "role": owner["role"]},
+            "carried_forward": bool(g.get("carry_forward")) or None, "material": bool(g.get("material")) or None, "title": g["title"],
             "deferral": d and {"reason": d.get("reason"), "by_name": d.get("by_name"), "by_role": d.get("by_role"),
                                "at_ist": d.get("at_ist"), "revisit_by": d.get("revisit_by"), "waiting_on": d.get("owner")},
-            "due_for_revisit": g["gap_id"] in due, "skipped_count": g["skipped_count"],
+            "due_for_revisit": g["gap_id"] in due or None, "skipped_count": g["skipped_count"] or None,
             "requirement_ids": g["impacted_requirement_ids"], "story_ids": _story_ids_for(p, g),
-            "blocks_stories": blocks_requirements(p, g)})
+            "blocks_stories": blocks_requirements(p, g) or None})
     rows.sort(key=lambda r: (rank[r["priority"]], r["triage_group"] != "OPEN", r["gap_id"]))
-    return {"gaps": rows, "total": len(rows),
-            "counts": {"OPEN": sum(1 for r in rows if r["triage_group"] == "OPEN"),
-                       "DEFERRED": sum(1 for r in rows if r["triage_group"] == "DEFERRED"),
-                       "carried_forward": sum(1 for r in rows if r["carried_forward"]),
-                       "blocking": sum(1 for r in rows if r["blocks_stories"])},
+    counts = {"OPEN": sum(1 for r in rows if r["triage_group"] == "OPEN"),
+              "DEFERRED": sum(1 for r in rows if r["triage_group"] == "DEFERRED"),
+              "carried_forward": sum(1 for r in rows if r["carried_forward"]),
+              "blocking": sum(1 for r in rows if r["blocks_stories"])}
+    summary = None
+    if rows:
+        bits = [f"{len(rows)} gap(s)"] + [f"{n} {w}" for n, w in ((counts["blocking"], "block stories"), (counts["DEFERRED"], "deferred"),
+                                                                    (counts["carried_forward"], "carried forward")) if n]
+        due_n = sum(1 for r in rows if r["due_for_revisit"])
+        summary = (" · ".join(bits) + (f" · {due_n} due for revisit" if due_n else "") + ". Order: "
+                   + ", ".join(f"{r['gap_id']} ({r['priority']})" for r in rows[:12]) + (f", +{len(rows) - 12} more" if len(rows) > 12 else ""))
+    return {"gaps": rows, "total": len(rows), "counts": counts, "summary": summary,
             "decision_owner": p.state.get("decision_owner") and {"name": p.state["decision_owner"]["name"],
                                                                  "role": p.state["decision_owner"]["role"]},
             "next": ("Ask for the decision owner first (`owner set`)." if not p.state.get("decision_owner") else
@@ -346,7 +333,7 @@ def _present_one(p, gid: str) -> dict:
             elif p.state["stage"] in ("REQUIREMENTS_BASELINED", "STORIES_READY", "WAITING_FOR_STORY_REVIEW", "COMPLETED"):
                 p.reopen_to("WAITING_FOR_GAP_INPUT", "gap-revisit")
     reqmap = {r["requirement_id"]: r for r in p.requirements()}
-    return _packet(p, _get(p.gaps(), gid), reqmap)
+    return _packet(p, _get(p.gaps(), gid), reqmap, sum(1 for x in p.gaps() if x['status'] != 'RESOLVED'))
 
 
 def keep(p, gid: str) -> dict:
@@ -403,7 +390,8 @@ def next_gaps(p, limit: int = 1, carried: bool = False, gap_id: str | None = Non
         elif p.state["stage"] in ("REQUIREMENTS_BASELINED", "STORIES_READY", "WAITING_FOR_STORY_REVIEW", "COMPLETED") and chosen:
             p.reopen_to("WAITING_FOR_GAP_INPUT", "gap-revisit")
         remaining = len(cand) - len(chosen)
-    return {"gaps": [_packet(p, g, reqmap) for g in chosen], "remaining_unpresented": remaining,
+    left = sum(1 for g in gaps if g["status"] != "RESOLVED")
+    return {"gaps": [_packet(p, g, reqmap, left) for g in chosen], "remaining_unpresented": remaining,
             "unresolved_total": sum(1 for g in gaps if g["status"] != "RESOLVED"),
             "high_priority_outstanding": [g["gap_id"] for g in gaps if g["status"] != "RESOLVED" and g["priority"] in ("CRITICAL", "HIGH")],
             "carried_forward_open": carried_forward_gaps(p),

@@ -153,7 +153,10 @@ class ResumeTests(BATest):
         self.assertIn("gap(s) await answers", st["next_action"])
         again = gapmod.next_gaps(p, 3)
         self.assertEqual(again["gaps"][0]["gap_id"], "GAP-001", "already-presented gaps come back first")
-        self.assertEqual(again["gaps"][0]["previous_answers"][0]["response"], "R10/day")
+        view = again["gaps"][0]["present"]
+        self.assertFalse(view["inline"], "a gap with an earlier answer is sent with its card")
+        self.assertIn("Earlier answer A1:", view["card"])
+        self.assertIn("R10/day", view["card"])
         self.assertEqual(p.gap("GAP-001")["answers"][0]["respondent_name"], "Priya Nair")
         fu = gapmod.followup(p, "GAP-001", "A1", "Need a maximum and the grace period.")
         a2 = gapmod.record_answer(p, "GAP-001", "R10/day, max R200, no grace period.")

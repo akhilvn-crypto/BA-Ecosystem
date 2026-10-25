@@ -109,7 +109,8 @@ class DecisionOwnerTests(BATest):
         self.set_owner(p)
         out = gapmod.next_gaps(p, 3)
         self.assertEqual(len(out["gaps"]), 3)
-        self.assertEqual(out["gaps"][0]["decision_owner"], {"name": "Priya Nair", "role": "Product Owner"})
+        self.assertEqual(p.state["decision_owner"]["name"], "Priya Nair")
+        self.assertNotIn("decision_owner", out["gaps"][0])
 
     def test_placeholder_or_missing_identity_rejected(self):
         p = self.with_gaps()
