@@ -12,7 +12,7 @@ PURPOSE = {
     "init": "Create the project, fingerprint and outline the BRD (md/txt/docx), stage BRD_PARSED. --copy-source copies, never moves, the BRD into source/. Returns outline, batches and delegate.",
     "status": "Stage, counts, blockers, validation and the NEXT action (text; --json for data).",
     "find": "Needs no project: BA projects and likely BRDs in a folder. readable_directly=false means PDF/DOC/RTF/XLSX: use `convert`.",
-    "convert": "Needs --root only: PDF/DOC/RTF/XLSX -> source/<name>.md with local tools (CONVERTER_UNAVAILABLE -> transcribe by hand). Then `init` that .md.",
+    "convert": "Needs --root only: PDF/DOC/RTF/XLSX -> source/<name>.md with local tools (CONVERTER_UNAVAILABLE -> transcribe by hand). Then `init` that .md. A file name starting with `-` must be written `--in=-name.rtf`.",
     "files": "Read-only: every artifact folder with files, absolute md/ and json/ paths and counts.",
     "manifest": "Compare the project tree with state/manifest.json (the state committed at the end of the last stage): in_sync and drift {edited, added, missing}. --write records the current tree; --full lists every sha256. Global --changed-files adds changed_files/removed_files to any command. --stage-list returns the files to stage into a cloud workspace (no backups, inbox or md views).",
     "bridge": "`bridge on` records in state/bridge.json that every command reports changed_files/removed_files (Cowork file bridge), so --changed-files need not be repeated; `bridge off` clears it; no argument shows it.",

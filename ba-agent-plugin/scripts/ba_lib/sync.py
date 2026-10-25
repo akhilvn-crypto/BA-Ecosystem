@@ -66,10 +66,13 @@ def sig(root) -> dict[str, tuple[int, int]]:
     return out
 
 
-def changed(before: dict, after: dict) -> dict:
-    """Files this command wrote (new or modified) and removed. A move shows as one removal plus one new path."""
+def changed(before: dict, after: dict, vacated=()) -> dict:
+    """Files this command wrote (new or modified) and removed. A move shows as one removal plus one new path.
+
+    `vacated` are the old paths of a move the command made. They are reported even if this workspace never held the file (a lean
+    staged copy has no `md/` views), because the user's folder may still have it."""
     written = sorted(p for p, v in after.items() if before.get(p) != v and p != PROBE)
-    removed = sorted(p for p in before if p not in after and p != PROBE)
+    removed = sorted({p for p in before if p not in after and p != PROBE} | {p for p in vacated if p not in after})
     return {"changed_files": written, "removed_files": removed}
 
 

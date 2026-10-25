@@ -102,6 +102,9 @@ class Project:
     def __init__(self, root: Path):
         self.root = Path(root).resolve()
         self._state: dict | None = None
+        # Paths a move left behind (a gap changing folder, a story changing bucket). They are reported as removed even when the
+        # file was never in this workspace: a lean staged copy has no md/ view to notice missing, but the user's side does.
+        self.vacated: set[str] = set()
 
     # ------------------------------------------------------------ lifecycle
     @classmethod
@@ -461,16 +464,19 @@ class Project:
             errs = schema.validate(g, "gap")
             if errs:
                 raise BAError("SCHEMA_INVALID", f"{g.get('gap_id')} failed gap validation", errors=errs)
+        was = {x["gap_id"]: gap_bucket(x) for x in self.gaps()}
         self.write_json(GAP_REGISTER, {"schema_version": "1.0", "updated_at": ist_now_iso(), "gaps": gaps})
         for g in gaps:
             if touched is None or g["gap_id"] in touched:
-                self.store_gap_files(g)
+                self.store_gap_files(g, was.get(g["gap_id"]))
 
-    def store_gap_files(self, g: dict) -> str:
+    def store_gap_files(self, g: dict, was: str | None = None) -> str:
         """Write the gap's readable (`md/`) and record (`json/`) copies into the folder for its status and remove any copy left
         in another folder, so a gap that is answered, deferred or reopened simply moves. Returns the folder it now lives in."""
         bucket = gap_bucket(g)
         gid = g["gap_id"]
+        if was and was != bucket:  # a move: the old copies are gone whether or not this workspace ever held them
+            self.vacated.update(f"gaps/{was}/{ext}/{gid}.{ext}" for ext in ("md", "json"))
         self.write_json(f"gaps/{bucket}/{gid}.json", g)
         self.write_text(f"gaps/{bucket}/{gid}.md", render.gap_md(g))
         for other in GAP_BUCKETS:
@@ -543,6 +549,7 @@ class Project:
     def remove_story_files(self, bucket: str, sid: str) -> None:
         for ext in ("json", "md"):
             f = self.path(f"stories/{bucket}/{sid}.{ext}")
+            self.vacated.add(physical(f"stories/{bucket}/{sid}.{ext}"))
             if f.exists():
                 f.unlink()
 

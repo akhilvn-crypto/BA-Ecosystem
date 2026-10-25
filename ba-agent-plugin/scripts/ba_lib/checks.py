@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from . import changes as changemod, gaps as gapmod, schema, snapshots, stories as storymod, storytrack
+from . import changes as changemod, gaps as gapmod, schema, snapshots, stories as storymod, storytrack, sync
 from .project import GAP_BUCKETS, REQ_DIR, gap_bucket
 from .util import BAError, append_jsonl, human_ist, is_ist_iso, ist_now_iso, read_jsonl, normalize_ws
 
@@ -18,6 +18,9 @@ BUCKET_STATUS = {"candidates": {"CANDIDATE", "IN_REVIEW", "BLOCKED"}, "approved"
 def validate_project(p) -> dict:
     E, W = [], []
     st = p.state
+    # With the file bridge on, the workspace is a lean copy: md/ views are rebuilt by writing commands and already sit on the
+    # user's side, so a missing view is expected, not damage (and `recover` would only rebuild copies the user already has).
+    views_not_staged = sync.bridge_on(p.root)
     # ---- requirements
     secs = {s["section_id"] for s in (p.read_json("state/pending/source-change.json")["sections"]
                                       if p.exists("state/pending/source-change.json") else p.source_metadata()["sections"])}
@@ -33,7 +36,7 @@ def validate_project(p) -> dict:
             W.append(f"{r['requirement_id']}: no source excerpt recorded")
         if r["source_fingerprint"] != st["source"]["fingerprint"] and r["status"] == "ACTIVE" and not st["impact_review"].get("pending"):
             E.append(f"{r['requirement_id']}: source fingerprint differs from the project source fingerprint")
-        if not p.exists(f"{REQ_DIR}/{r['requirement_id']}.md"):
+        if not views_not_staged and not p.exists(f"{REQ_DIR}/{r['requirement_id']}.md"):
             W.append(f"{r['requirement_id']}: rendered .md missing")
     # ---- gaps / decisions / audit
     gaps = p.gaps()
@@ -42,7 +45,9 @@ def validate_project(p) -> dict:
         E.append("duplicate gap IDs in gap-register.json")
     for g in gaps:
         b = gap_bucket(g)
-        if not p.exists(f"gaps/{b}/{g['gap_id']}.md"):
+        if views_not_staged:
+            pass
+        elif not p.exists(f"gaps/{b}/{g['gap_id']}.md"):
             W.append(f"{g['gap_id']}: readable copy missing from gaps/{b}/md (run `recover` to rebuild it)")
         elif any(p.exists(f"gaps/{o}/{g['gap_id']}.md") for o in GAP_BUCKETS if o != b):
             W.append(f"{g['gap_id']}: also found in another gaps/ folder; it belongs in gaps/{b} (run `recover`)")
@@ -212,8 +217,11 @@ def validate_project(p) -> dict:
     expect = sorted(g["gap_id"] for g in gaps if g["status"] != "RESOLVED")
     if sorted(st["pending_gap_ids"]) != expect:
         W.append("workflow.json pending_gap_ids is out of date (fixed on next save)")
-    return {"ok": not E, "errors": E, "warnings": W,
-            "counts": {"requirements": len(reqs), "gaps": len(gaps), "decisions": len(decs), "audit_events": len(events)}}
+    out = {"ok": not E, "errors": E, "warnings": W,
+           "counts": {"requirements": len(reqs), "gaps": len(gaps), "decisions": len(decs), "audit_events": len(events)}}
+    if views_not_staged:
+        out["md_views"] = "not checked: bridge on, md/ views are not staged (do not run `recover` for them)"
+    return out
 
 
 def traceability(p, write: bool = False) -> dict:

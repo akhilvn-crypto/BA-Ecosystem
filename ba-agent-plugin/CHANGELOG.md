@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased (fixes from `ba-agent-1.10.0-audit.md`)
+## 1.10.1
+Fixes from `ba-agent-1.10.0-audit.md` (D1-D8) and `ba-agent-reaudit-3.md` (R1-R5). The version is bumped so a Cowork upload is not mistaken for the cached 1.10.0.
+- **R1 new projects turn the bridge on.** `stages/brd-ingestion.md` step 4: with file-bridge tools, `init --changed-files`, then `bridge on`, then commit what `init` reported together with `state/bridge.json`.
+- **R2 lean copies are not noisy.** With `bridge on`, `validate` no longer warns about missing `md/` views (it says `md_views: not checked`), and `cowork-sync.md` says not to run `recover` for them.
+- **R4 moves from a lean copy.** A gap changing folder (`gap defer`, `resolve`, ...) or a story changing bucket (`story approve`, `defer`, ...) now reports the old paths in `removed_files` even when the workspace never held that `md/` view; before, the user's old copy stayed behind. New `test_cowork/test_lean_moves.py` replays `story approve`, `story defer` and `gap defer` from a lean copy onto a full copy of the project and compares it with a full run.
+- **R5** `help convert` notes that a file name starting with `-` is passed as `--in=-name.rtf`.
 - **D1 backups no longer synced.** `state/backups/` and `state/inbox/` are local only: never in `changed_files`, `removed_files` or the manifest.
 - **D2 DOC/RTF headings.** `convert` runs numbered lines through the heading rule when LibreOffice's output has no heading styles.
 - **D3 no bytecode from helper scripts.** `safe_write.py`, `validate_artifacts.py`, `check_traceability.py` and `fingerprint_source.py` set `sys.dont_write_bytecode` before importing `ba_lib` (a package `__init__` is compiled before its own body runs, so the flag must be set by the script).

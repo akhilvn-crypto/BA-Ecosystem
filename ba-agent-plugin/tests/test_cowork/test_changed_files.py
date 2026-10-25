@@ -5,7 +5,7 @@ import io
 import json
 import shutil
 
-from tests.helpers import BATest, gapmod
+from tests.helpers import BATest, PLUGIN, gapmod
 from ba_lib import cli
 
 OWNER = ("Priya Nair", "Product Owner")
@@ -84,6 +84,24 @@ class ChangedFilesTests(BATest):
         self.assertTrue(out["ok"], out)
         for want in ("state/workflow.json", "START-HERE.md", "extracted/md/brd-outline.md"):
             self.assertIn(want, out["changed_files"])
+        self.assertTrue([x for x in out["changed_files"] if x.startswith("snapshots/")], "the BRD snapshot is reported too")
+
+    def test_new_project_flow_init_then_bridge_on_then_commands_report_without_the_flag(self):
+        root = self.tmp / "fresh"
+        init = ba(root, "init", "--brd", str(self.brd_copy()))
+        self.assertTrue(init["ok"], init)
+        on = ba(root, "bridge", "on", changed=False)
+        self.assertEqual(on["bridge"], "on")
+        self.assertIn("state/bridge.json", on["changed_files"])
+        from ba_lib.project import Project
+        f = self.tmp / "reqs.json"
+        f.write_text(json.dumps(self.req_items(Project.open(root))[:1]), encoding="utf-8")
+        out = ba(root, "req", "add", "--file", str(f), changed=False)
+        self.assertIn("atomic-requirements/json/REQ-001.json", out["changed_files"], "no flag needed after bridge on")
+
+    def test_the_new_project_path_tells_the_model_to_turn_the_bridge_on(self):
+        text = (PLUGIN / "skills/ba-workflow/references/stages/brd-ingestion.md").read_text(encoding="utf-8")
+        self.assertIn("Add `--changed-files` to `init`, then run `bridge on`", text)
 
 
 class ManifestTests(BATest):
@@ -152,6 +170,22 @@ class ManifestTests(BATest):
         self.assertEqual(ba(p.root, "bridge", "off", changed=False)["bridge"], "off")
         f.write_text(json.dumps(self.req_items(p)[1:2]), encoding="utf-8")
         self.assertNotIn("changed_files", ba(p.root, "req", "add", "--file", str(f), changed=False))
+
+    def test_lean_copy_with_bridge_on_does_not_warn_about_md_views_that_are_not_staged(self):
+        p = self.with_gaps()
+        self.set_owner(p, *OWNER)
+        ba(p.root, "manifest", "--write")
+        lean = self.tmp / "workspace"
+        for rel in ba(p.root, "manifest", "--stage-list")["stage"]:
+            (lean / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(p.root / rel, lean / rel)
+        before = ba(lean, "validate", changed=False)
+        self.assertTrue([w for w in before["warnings"] if "md" in w], "without the bridge the missing views are reported")
+        ba(lean, "bridge", "on", changed=False)
+        out = ba(lean, "validate", changed=False)
+        self.assertTrue(out["ok"], out)
+        self.assertEqual([w for w in out["warnings"] if "rendered .md missing" in w or "readable copy missing" in w], [])
+        self.assertIn("md_views", out)
 
     def test_changes_check_still_sees_the_hand_edit_once_fresh_copies_are_staged(self):
         p = self.to_stories()

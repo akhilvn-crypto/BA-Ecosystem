@@ -198,7 +198,8 @@ def run(a) -> dict | str:
     p, out = _run(a)
     out = _finish(a, p, out)
     if before is not None and isinstance(out, dict):
-        out.update(sync.changed(before, sync.sig(root)))
+        after = sync.sig(root)
+        out.update(sync.changed(before, after, getattr(p, "vacated", ())))
     return out
 
 
