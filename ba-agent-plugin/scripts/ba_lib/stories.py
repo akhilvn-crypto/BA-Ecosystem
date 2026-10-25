@@ -307,7 +307,7 @@ def _update_context(p, s: dict) -> list[dict]:
 
 
 def next_story(p, story_id: str | None = None, deferred: bool = False, batch: int = 1, unapproved: bool = False,
-               full: bool = False) -> dict:
+               full: bool = False, fallback: bool = False) -> dict:
     buckets = ("deferred",) if deferred else ("unapproved",) if unapproved else ("candidates",)
     pool = [(b, s) for b, s in p.all_stories() if b in buckets]
     position = None
@@ -339,7 +339,7 @@ def next_story(p, story_id: str | None = None, deferred: bool = False, batch: in
         upd = _update_context(p, s) if (s.get("impact_review") or {}).get("pending") else []
         pos = position or (f"{i + 1} of {len(chosen)}" if len(chosen) > 1 else None)
         view = present.story_view(s, {"blockers": blockers, "bucket": bucket, "live_gaps": derived["open_gap_ids"],
-                                      "update_ctx": upd, "position": pos})
+                                      "update_ctx": upd, "position": pos, "fallback": fallback})
         item = {"story_id": s["story_id"], "version": s["version"], "status": s["status"], "bucket": bucket,
                 "readiness": s.get("readiness"), "eligible": not blockers, "blockers": blockers, "present": view}
         if full:

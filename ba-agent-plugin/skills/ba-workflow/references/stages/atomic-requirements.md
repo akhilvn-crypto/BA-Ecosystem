@@ -1,8 +1,3 @@
----
-name: atomic-requirements
-description: Decompose a parsed BRD into atomic requirements with stable IDs, verbatim source quotes and section references. Use when the stage is BRD_PARSED.
----
-
 # Atomic requirements
 
 Work section by section: `source section <SID>` (one section at a time; tables included), then write requirements for it.
@@ -29,4 +24,4 @@ Then: `req add --file …` (IDs `REQ-001…` are assigned for you) → `req pair
 
 **Large BRDs:** `init` / `source outline` return `batches` and `delegate`. When `delegate` is true, do not read the sections here: give each batch of section IDs to a `ba-agent:requirement-analyst` helper (batches run in parallel). Each returns at most 8 lines and a file under `state/inbox/`; you run `req add --file` for each file, then `req pairs` and `req commit`.
 
-**Where they are saved:** the core writes every requirement into the confirmed project folder (readable copies in `atomic-requirements/md/`, records in `json/`); you never write requirement files yourself. `req add` writes each requirement the moment it is accepted - nothing waits for `req commit`, so an interrupted session loses no requirement already added. After `req commit`, say in one line how many requirements were saved and where (`files_saved` -> `atomic-requirements/`), then go straight on to gap analysis without waiting (`../ba-workflow/references/save-checkpoint.md`). If `files_saved` is missing or empty, say so plainly and stop.
+**Where they are saved:** the core writes every requirement into the confirmed project folder (readable copies in `atomic-requirements/md/`, records in `json/`); you never write requirement files yourself. `req add` writes each requirement the moment it is accepted - nothing waits for `req commit`, so an interrupted session loses no requirement already added. After `req commit`, say in one line how many requirements were saved and where (`files_saved` -> `atomic-requirements/`), then go straight on to gap analysis without waiting (`../save-checkpoint.md`). If `files_saved` is missing or empty, say so plainly and stop.

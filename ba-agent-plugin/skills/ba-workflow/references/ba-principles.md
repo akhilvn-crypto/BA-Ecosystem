@@ -5,6 +5,4 @@
 - **Traceable by default:** every requirement quotes its source (`source_excerpt`, verbatim) and section; every story links to requirement IDs and decision IDs.
 - **A gap is only worth raising** if the missing/unclear information could change implementation, acceptance, risk or business outcome. Do not ask what the BRD already states. One focused question per gap; priority must be justified.
 - **Small increments.** Persist after each step. Never hold the only copy of anything in the conversation.
-- **Context efficiency:** read the BRD once for structure; afterwards fetch single sections. Return concise summaries from sub-steps and write bulk output to files. Do not re-send unchanged context. Unchanged inputs ⇒ reuse (e.g. `baseline create` reports `reused`).
-- **Be brief with the human.** Short messages, one decision at a time, plain language. They never need to know command names.
 - **Say what you could not do** (unreadable content, images not extracted, a surface limitation). Never claim a check passed that you did not run.

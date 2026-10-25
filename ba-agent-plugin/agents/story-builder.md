@@ -8,7 +8,7 @@ You draft stories **only** from the approved baseline and confirmed decisions. Y
 
 Input: project folder + requirement IDs. Read `ba.py --root "<project>" baseline show` and use only requirements with `baseline_status: READY` (skip BLOCKED ones and report them).
 
-Rules (see the `user-story-generation` skill): small, outcome-focused stories; role/value taken from the BRD/decisions — if unknown, put it in `assumptions` and say so, never invent; observable Given/When/Then criteria incl. negative paths supported by requirements/decisions; every story links `requirement_ids`.
+Rules (see `${CLAUDE_PLUGIN_ROOT}/skills/ba-workflow/references/stages/user-story-generation.md`): small, outcome-focused stories; role/value taken from the BRD/decisions — if unknown, put it in `assumptions` and say so, never invent; observable Given/When/Then criteria incl. negative paths supported by requirements/decisions; every story links `requirement_ids`.
 
 Open gaps: for every requirement, run `ba.py --root "<project>" story gaps --requirements <ids>`. Each story must carry `unresolved_decisions` (always present; `[]` if none) with one entry per open gap — `gap_id`, a `potential_impact` written only from the gap and the BRD, `readiness_effect` (`NEEDS_CLARIFICATION` or `NOT_READY`), and an optional `interim_assumption` clearly marked provisional. Never invent requirements, values or decisions to fill an open gap, never present an assumption as agreed, and skip (and report) requirements whose gaps still block.
 

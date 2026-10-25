@@ -59,16 +59,17 @@ class Measure(BATest):
     def prompt_surface() -> dict:
         """Bytes of instructions a model loads per stage (skills and references are read only when their branch is reached)."""
         size = lambda *names: sum((PLUGIN / n).stat().st_size for n in names)
-        sk = lambda n: f"skills/{n}/SKILL.md"
+        sk = lambda n: "skills/ba-workflow/SKILL.md" if n == "ba-workflow" else f"skills/ba-workflow/references/stages/{n}.md"
+        sub = lambda n, f: f"skills/ba-workflow/references/stages/{n}/{f}.md"
         descs = sum(len(re.search(r"^description: (.*)$", f.read_text(encoding="utf-8"), re.M).group(1)) for f in PLUGIN.glob("skills/*/SKILL.md"))
         return {
             "skill_descriptions_always_loaded_chars": descs,
             "gap_session": size(sk("ba-workflow"), sk("gap-resolution")),
-            "gap_session_with_validate_and_actions": size(sk("ba-workflow"), sk("gap-resolution"), "skills/gap-resolution/references/validate-and-resolve.md",
-                                                           "skills/gap-resolution/references/actions.md"),
+            "gap_session_with_validate_and_actions": size(sk("ba-workflow"), sk("gap-resolution"), sub("gap-resolution", "validate-and-resolve"),
+                                                           sub("gap-resolution", "actions")),
             "story_session": size(sk("ba-workflow"), sk("story-review")),
-            "triage_gaps_command": size("commands/triage-gaps.md", sk("ba-workflow"), sk("gap-resolution"), "skills/gap-resolution/references/triage.md"),
-            "triage_stories_command": size("commands/triage-stories.md", sk("ba-workflow"), sk("story-review"), "skills/story-review/references/triage.md"),
+            "triage_gaps_command": size("commands/triage-gaps.md", sk("ba-workflow"), sk("gap-resolution"), sub("gap-resolution", "triage")),
+            "triage_stories_command": size("commands/triage-stories.md", sk("ba-workflow"), sk("story-review"), sub("story-review", "triage")),
         }
 
     def cli_outputs(self) -> dict:

@@ -241,15 +241,15 @@ def _explanation(p, g: dict, reqmap: dict) -> dict:
     }
 
 
-def _packet(p, g: dict, reqmap: dict, left: int = 0) -> dict:
+def _packet(p, g: dict, reqmap: dict, left: int = 0, fallback: bool = False) -> dict:
     """What the model needs to act on ONE gap. Everything the human reads (evidence, impacted requirements, earlier answers,
     deferral history) lives in `present` - built once, never duplicated here; `gap explain` carries the plain-language facts."""
     blocker = carry_forward_blocker(p, g)
     blocks = blocks_requirements(p, g)
     view = present.gap_view(g, {"reqmap": reqmap, "blocks_stories": blocks, "carry_ok": blocker is None, "blocker_why": blocker,
-                                "left": left, "story_ids": _story_ids_for(p, g)})
+                                "left": left, "story_ids": _story_ids_for(p, g), "fallback": fallback})
     return {
-        "gap_id": g["gap_id"], "priority": g["priority"], "status": g["status"], "question": g["question"],
+        "gap_id": g["gap_id"], "priority": g["priority"], "status": g["status"],
         "material": bool(g["material"]), "impacted_requirement_ids": g["impacted_requirement_ids"],
         "blocks_stories": blocks, "carry_forward_allowed": blocker is None, "carry_forward_not_allowed_because": blocker,
         "suggested_answer": g.get("suggested_answer"),
@@ -311,7 +311,7 @@ def triage(p, status: str | None = None) -> dict:
                      "Present the gaps one at a time in this order: `gaps next --id GAP-00x`.") if rows else "No OPEN or DEFERRED gaps."}
 
 
-def _present_one(p, gid: str) -> dict:
+def _present_one(p, gid: str, fallback: bool = False) -> dict:
     """Present one chosen gap. OPEN/REOPENED gaps become WAITING_FOR_ANSWER (as in `gaps next`). DEFERRED and
     carried-forward gaps are shown as they are - looking at them changes nothing; `gap revisit` is run only if the human
     decides to answer."""
@@ -333,7 +333,7 @@ def _present_one(p, gid: str) -> dict:
             elif p.state["stage"] in ("REQUIREMENTS_BASELINED", "STORIES_READY", "WAITING_FOR_STORY_REVIEW", "COMPLETED"):
                 p.reopen_to("WAITING_FOR_GAP_INPUT", "gap-revisit")
     reqmap = {r["requirement_id"]: r for r in p.requirements()}
-    return _packet(p, _get(p.gaps(), gid), reqmap, sum(1 for x in p.gaps() if x['status'] != 'RESOLVED'))
+    return _packet(p, _get(p.gaps(), gid), reqmap, sum(1 for x in p.gaps() if x['status'] != 'RESOLVED'), fallback)
 
 
 def keep(p, gid: str) -> dict:
@@ -348,11 +348,11 @@ def keep(p, gid: str) -> dict:
     return answer_later(p, gid)
 
 
-def next_gaps(p, limit: int = 1, carried: bool = False, gap_id: str | None = None) -> dict:
+def next_gaps(p, limit: int = 1, carried: bool = False, gap_id: str | None = None, fallback: bool = False) -> dict:
     """The next gap(s) to ask. Carried-forward gaps are not asked again unless `carried=True` (a deliberate revisit).
     `gap_id` presents one chosen gap instead (used by triage; also reaches DEFERRED gaps without changing them)."""
     if gap_id:
-        packet = _present_one(p, gap_id)
+        packet = _present_one(p, gap_id, fallback)
         gaps = p.gaps()
         return {"gaps": [packet], "remaining_unpresented": 0,
                 "unresolved_total": sum(1 for g in gaps if g["status"] != "RESOLVED"),
@@ -391,7 +391,7 @@ def next_gaps(p, limit: int = 1, carried: bool = False, gap_id: str | None = Non
             p.reopen_to("WAITING_FOR_GAP_INPUT", "gap-revisit")
         remaining = len(cand) - len(chosen)
     left = sum(1 for g in gaps if g["status"] != "RESOLVED")
-    return {"gaps": [_packet(p, g, reqmap, left) for g in chosen], "remaining_unpresented": remaining,
+    return {"gaps": [_packet(p, g, reqmap, left, fallback) for g in chosen], "remaining_unpresented": remaining,
             "unresolved_total": sum(1 for g in gaps if g["status"] != "RESOLVED"),
             "high_priority_outstanding": [g["gap_id"] for g in gaps if g["status"] != "RESOLVED" and g["priority"] in ("CRITICAL", "HIGH")],
             "carried_forward_open": carried_forward_gaps(p),

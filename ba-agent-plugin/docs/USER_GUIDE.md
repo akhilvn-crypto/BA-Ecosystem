@@ -74,7 +74,7 @@ python scripts/ba.py --root <project> validate
 python scripts/ba.py --root <project> trace --write
 python scripts/ba.py --root <project> recover
 ```
-Reference: `skills/ba-workflow/references/cli-reference.md`.
+Reference: `python scripts/ba.py help` (groups), `help <group> [<action>]` (options and purpose of each command), generated from the code.
 
 ## 8. Fewer permission prompts (optional)
 

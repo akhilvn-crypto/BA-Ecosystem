@@ -38,4 +38,4 @@ Say plainly: **deferred is not resolved** — it stays outstanding and keeps blo
 ## Other
 `gap reopen GAP-00x --reason … --by-name … --by-role …` invalidates its decision (baseline and stories get impact flags). `policy set …` only when the human asks (`--deferral-revisit-required CRITICAL,HIGH`, or `--carry-forward true` for project-wide acceptance).
 
-Fallback without `AskUserQuestion` — use `present.fallback`; the behaviour and recorded data are identical.
+Fallback when the dialog tool fails — re-run `gaps next --id GAP-00x --fallback` and use `present.fallback`; the behaviour and recorded data are identical.

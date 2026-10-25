@@ -1,8 +1,3 @@
----
-name: resume-workflow
-description: Resume an interrupted or later-session BA workflow from saved artifacts - find the project, read status, repair interrupted writes, continue from the right stage.
----
-
 # Resume
 
 State lives in files, not in the conversation. To resume:

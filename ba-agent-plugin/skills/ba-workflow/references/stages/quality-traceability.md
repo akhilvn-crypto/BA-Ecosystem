@@ -1,8 +1,3 @@
----
-name: quality-traceability
-description: Run schema, source-reference, audit and requirement-to-story traceability checks. Use before presenting stories, before completion, or when errors are reported.
----
-
 # Quality and traceability
 
 **Deterministic (cheap — always run these first, no extra model call):**

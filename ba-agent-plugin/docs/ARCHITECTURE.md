@@ -5,7 +5,7 @@
 | Layer | Responsibility | Where |
 |---|---|---|
 | UX | `/ba-agent:start`, `status`, `review`, `triage-gaps`, `triage-stories`, `changes`; plain-language, one decision at a time | `commands/` |
-| Workflow knowledge | Stage routing, decomposition, gap taxonomy, story rules, shared non-negotiables | `skills/` (+ `references/`), optional `agents/` |
+| Workflow knowledge | Stage routing, decomposition, gap taxonomy, story rules, shared non-negotiables | `skills/ba-workflow/` (+ `references/`, `references/stages/`), optional `agents/` |
 | Deterministic core | State machines, identities, IST clock, audit log, schemas, IDs, fingerprints, conflict gate, safe writes, validation, traceability, recovery | `scripts/ba_lib/` via `scripts/ba.py` |
 | Artifacts | Authoritative JSON + rendered Markdown + append-only JSONL | the project folder the user confirmed |
 
@@ -68,12 +68,14 @@ Every answer is compared (advisory, deterministic) with requirements, active dec
 ## Context engineering (1.8.0)
 
 Principle: the model receives *the right information, only when it is needed*, and the core does everything that does not need judgement.
-- **Load on demand.** `ba-workflow` is the router and the non-negotiables; each stage skill is a short loop. Branch detail lives in `references/` of that skill and is opened only at the branch (`gap-resolution/references/{actions,validate-and-resolve,revisit,triage}.md`, `story-review/references/triage.md`). `change-detection` loads only when `changes check` reports a change. `tests/test_context` fails if a skill grows past its budget or a reference pointer dangles.
-- **Presentation in code (`ba_lib/present.py`).** One gap or story at a time. The core builds the `AskUserQuestion` payload (`dialog`), the compact markdown (`card`) and a numbered `fallback`; the model relays. A gap whose dialog holds everything is `inline` - sent as the dialog alone; a story always sends its card first because its acceptance criteria must be read to be approved. Queues are a one-line `summary`.
+- **Load on demand.** `ba-workflow` is the only listed skill: the router and the non-negotiables. Each stage is a short loop in `references/stages/<name>.md`, opened only for the current stage (1.10.0; before, ten stage skills were advertised in every session). Branch detail sits beside it and is opened only at the branch (`stages/gap-resolution/{actions,validate-and-resolve,revisit,triage}.md`, `stages/story-review/triage.md`). `change-detection` loads only when `changes check` reports a change. `tests/test_context` fails if a skill grows past its budget or a reference pointer dangles.
+- **Presentation in code (`ba_lib/present.py`).** One gap or story at a time. The core builds the `AskUserQuestion` payload (`dialog`) and the compact markdown (`card`); the numbered `fallback` is built only with `--fallback`, after the dialog tool failed. The model relays. A gap whose dialog holds everything is `inline` - sent as the dialog alone; a story always sends its card first because its acceptance criteria must be read to be approved. Queues are a one-line `summary`.
 - **Right fields, right time.** The gap packet keeps what the model *acts on*; `gap explain` carries the plain-language facts (fetched only if the human asks), `story next` carries a *Decision to apply* only for a story flagged by a resolved gap, `story show` / `--full` the raw record only when an edit file is needed.
 - **Hoisted blockers.** `story triage.preflight` states what blocks every story once (stale baseline, pending BRD review), so the user is never walked through stories that cannot be approved when one step unblocks them all.
 - **Compact output.** One-line JSON, empty values omitted, `files_saved` limited to the folders a command changed (a fresh disk scan taken after the write, which is also the save check).
-- **Delegation.** `source outline` returns sizes, `batches` (<= 12k characters) and `delegate` (BRD > 24k characters). Helper agents read the sections and return <= 8 lines plus a file under `state/inbox/`; only the main session runs mutating commands.
+- **Delegation (optional).** `source outline` returns sizes, `batches` (<= 30k characters) and `delegate` (BRD > 60k characters; `--delegate-above`, `--batch-chars` or `BA_DELEGATE_ABOVE`, `BA_BATCH_CHARS` override). Helpers start cold and re-read their batch, so the model asks once and otherwise reads section by section. Helpers return <= 8 lines plus a file under `state/inbox/`; only the main session runs mutating commands.
+- **No transcription.** `convert` turns PDF/DOC/RTF/XLSX into `source/<name>.md` with local tools, so the model does not read a document and rewrite it by hand. `help` is generated from the argparse definitions, so there is no static CLI reference to drift.
+- **Cowork file bridge (1.10.0).** `--changed-files` reports every file a command wrote, moved or removed (a before/after tree comparison, so every writer is covered); `manifest` compares a staged copy with the last committed state (`ba_lib/sync.py`, `references/cowork-sync.md`).
 - Measure with `python -m tests.measure_efficiency` (prompt surface per stage, CLI result sizes).
 
 ## Efficiency design

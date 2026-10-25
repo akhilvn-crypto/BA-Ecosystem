@@ -7,8 +7,10 @@ results a model reads. The budgets are regression guards: raise one only on purp
 import contextlib
 import io
 import json
+import os
 import re
 from pathlib import Path
+from unittest import mock
 
 from tests.helpers import PLUGIN, BATest, basemod, gapmod, ingest, option_labels, stories
 from ba_lib import cli, present
@@ -16,6 +18,7 @@ from ba_lib.project import Project
 
 OWNER = ("Priya Nair", "Product Owner")
 SKILLS = PLUGIN / "skills"
+STAGES = SKILLS / "ba-workflow" / "references" / "stages"
 
 
 def ba(root, *argv):
@@ -147,6 +150,9 @@ class GapPresentationTests(BATest):
             self.assertIn(needle, q)
         self.assertLessEqual(len(view["dialog"]["header"]), 12)
         self.assertNotIn("card", view, "an inline gap has no separate card")
+        self.assertNotIn("fallback", view, "the fallback repeats the dialog, so it is built only on request")
+        self.assertNotIn("question", pk, "the question is carried once, by the dialog")
+        view = gapmod.next_gaps(p, 1, gap_id="GAP-003", fallback=True)["gaps"][0]["present"]
         self.assertIn(q, view["fallback"], "without the tool the question itself is the message")
         self.assertIn("Reply with:", view["fallback"])
 
@@ -262,7 +268,7 @@ class BrdBatchingTests(BATest):
 
     def test_large_brd_is_split_into_bounded_batches_for_helper_agents(self):
         sections = "\n\n".join(f"## {i}. Area {i}\n\n" + ("The system shall support capability %d with its documented limits. " % i) * 60
-                               for i in range(1, 13))
+                               for i in range(1, 25))
         p = self.new_project(brd=self.brd_copy("big.md", "# Big BRD\n\n" + sections))
         out = ingest.outline_batches(p.load_source())
         self.assertTrue(out["delegate"])
@@ -273,6 +279,18 @@ class BrdBatchingTests(BATest):
         self.assertEqual([i for b in out["batches"] for i in b], [s["id"] for s in out["outline"]], "every section, in order, once")
         raw, js = ba(p.root, "source", "outline")
         self.assertTrue(js["delegate"])
+
+    def test_delegation_threshold_and_batch_size_are_overridable(self):
+        p = self.new_project()
+        meta = p.load_source()
+        self.assertTrue(ingest.outline_batches(meta, delegate_above=100)["delegate"])
+        self.assertGreater(len(ingest.outline_batches(meta, batch_chars=150)["batches"]), 1)
+        raw, js = ba(p.root, "source", "outline", "--delegate-above", "100")
+        self.assertTrue(js["delegate"])
+        with mock.patch.dict(os.environ, {"BA_DELEGATE_ABOVE": "100"}):
+            self.assertTrue(ingest.outline_batches(meta)["delegate"])
+        self.assertFalse(ingest.outline_batches(meta)["delegate"], "default threshold is well above a small BRD")
+        self.assertGreaterEqual(ingest.DELEGATE_ABOVE, 60000)
 
 
 class PromptBudgetTests(Flow):
@@ -299,14 +317,20 @@ class PromptBudgetTests(Flow):
         self.assertEqual(bad, [])
 
     def test_a_gap_session_loads_little_up_front(self):
-        up_front = sum(len((SKILLS / n / "SKILL.md").read_text(encoding="utf-8")) for n in ("ba-workflow", "gap-resolution"))
-        self.assertLessEqual(up_front, 11500, "router + gap loop (was ~28 KB before the split)")
-        for ref in (SKILLS / "gap-resolution" / "references").glob("*.md"):
+        up_front = len((STAGES.parent.parent / "SKILL.md").read_text(encoding="utf-8")) + len((STAGES / "gap-resolution.md").read_text(encoding="utf-8"))
+        self.assertLessEqual(up_front, 11200, "router + gap loop (was ~28 KB before the split)")
+        for ref in (STAGES / "gap-resolution").glob("*.md"):
             self.assertLessEqual(len(ref.read_text(encoding="utf-8")), 4800, ref.name)
 
     def test_a_story_session_loads_little_up_front(self):
-        up_front = sum(len((SKILLS / n / "SKILL.md").read_text(encoding="utf-8")) for n in ("ba-workflow", "story-review"))
-        self.assertLessEqual(up_front, 11500)
+        up_front = len((STAGES.parent.parent / "SKILL.md").read_text(encoding="utf-8")) + len((STAGES / "story-review.md").read_text(encoding="utf-8"))
+        self.assertLessEqual(up_front, 11100)
+
+    def test_only_the_router_is_a_listed_skill_and_stage_files_carry_no_frontmatter(self):
+        """T5: ten stage skills used to be advertised in every session; now one skill lists, and stage files load on demand."""
+        self.assertEqual([f.parent.name for f in SKILLS.glob("*/SKILL.md")], ["ba-workflow"])
+        for f in STAGES.rglob("*.md"):
+            self.assertFalse(f.read_text(encoding="utf-8").startswith("---"), f.name)
 
     def test_commands_stay_short(self):
         for f in (PLUGIN / "commands").glob("*.md"):
@@ -319,7 +343,11 @@ class PromptBudgetTests(Flow):
             for ref in re.findall(r"`((?:\.\./|references/|[a-z-]+/references/)[\w./-]+\.md)`", f.read_text(encoding="utf-8")):
                 relative_to_file = (f.parent / ref).resolve()
                 relative_to_skills = (SKILLS / ref).resolve()
-                if not relative_to_file.exists() and not relative_to_skills.exists():
+                relative_to_workflow = (SKILLS / "ba-workflow" / ref).resolve()
+                if not relative_to_file.exists() and not relative_to_skills.exists() and not relative_to_workflow.exists():
+                    missing.append(f"{f.relative_to(PLUGIN)} -> {ref}")
+            for ref in re.findall(r"`((?:stages/)?(?:gap-resolution|story-review|gap-analysis)/[\w-]+\.md)`", f.read_text(encoding="utf-8")):  # sibling pointers inside stage files
+                if not any((base / ref).exists() for base in (f.parent, STAGES, STAGES.parent)):
                     missing.append(f"{f.relative_to(PLUGIN)} -> {ref}")
         self.assertEqual(missing, [])
 
@@ -337,8 +365,12 @@ class GapPacketBudgetTests(BATest):
     def runTest(self):
         pass
 
-    def test_gap_packet_with_card_dialog_and_fallback_stays_small(self):
+    def test_default_gap_packet_stays_small_and_fallback_is_opt_in(self):
         p = self.with_gaps()
         self.set_owner(p, *OWNER)
-        raw, _ = ba(p.root, "gaps", "next", "--id", "GAP-003")
-        self.assertLessEqual(len(raw.encode("utf-8")), 2100, len(raw.encode("utf-8")))
+        raw, js = ba(p.root, "gaps", "next", "--id", "GAP-003")
+        self.assertLessEqual(len(raw.encode("utf-8")), 1274, len(raw.encode("utf-8")))  # was 1592 (-20% or better)
+        self.assertNotIn("fallback", js["gaps"][0]["present"])
+        full, js = ba(p.root, "gaps", "next", "--id", "GAP-003", "--fallback")
+        self.assertIn("fallback", js["gaps"][0]["present"])
+        self.assertGreaterEqual(len(full.encode("utf-8")) - len(raw.encode("utf-8")), 300, "the fallback is what was dropped")

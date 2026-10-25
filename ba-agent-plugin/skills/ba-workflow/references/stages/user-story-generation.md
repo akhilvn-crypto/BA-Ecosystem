@@ -1,8 +1,3 @@
----
-name: user-story-generation
-description: Generate candidate user stories with Given/When/Then criteria from the approved baseline only, linked to requirement and decision IDs. Use after a baseline is confirmed.
----
-
 # User-story generation
 
 Stories come from the **approved baseline** (`baseline show`), never from the raw BRD alone, and only for requirements that are `READY`. The core refuses blocked or unknown requirements, a stale/unapproved baseline, duplicates and non-Given/When/Then criteria.
@@ -41,6 +36,6 @@ A requirement can be `READY` while a MEDIUM/LOW gap on it is still open because 
 
 Before presenting: `validate`, `trace` (coverage: every READY requirement should end up with a story; list `uncovered_by_any_story`), then a brief semantic self-review (unsupported assumptions, ambiguity, consistency). For more than a handful of stories, give the requirement IDs to `ba-agent:story-builder` (and then `ba-agent:quality-reviewer`) instead of drafting them here: they return at most 8 lines and a file, and you still run `story add`.
 
-**Where they are saved:** `story add` writes each candidate to `stories/candidates/md/US-nnn.md` (records in `json/`). Tell the user the `md_folder` path and `md_files` count from `files_saved` before review starts (`../ba-workflow/references/save-checkpoint.md`).
+**Where they are saved:** `story add` writes each candidate to `stories/candidates/md/US-nnn.md` (records in `json/`). Tell the user the `md_folder` path and `md_files` count from `files_saved` before review starts (`../save-checkpoint.md`).
 
 Next: `story-review`.

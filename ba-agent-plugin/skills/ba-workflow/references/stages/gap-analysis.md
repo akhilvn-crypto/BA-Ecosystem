@@ -1,11 +1,6 @@
----
-name: gap-analysis
-description: Find missing, ambiguous, conflicting or untestable information in the requirements and record evidence-based gaps with priority and one question each. Use when the stage is REQUIREMENTS_READY or GAP_ANALYSIS.
----
-
 # Gap analysis
 
-Taxonomy and priority rubric: `references/taxonomy.md` (load it now).
+Taxonomy and priority rubric: `gap-analysis/taxonomy.md` (load it now).
 
 **Per requirement** (load only that requirement and its own BRD section via `source section`, never the whole BRD):
 1. Assess completeness, clarity, consistency, feasibility and testability.

@@ -5,6 +5,7 @@ PDF and other formats are reported as unsupported (never silently dropped).
 """
 from __future__ import annotations
 
+import os
 import re
 import zipfile
 import xml.etree.ElementTree as ET
@@ -264,17 +265,28 @@ def section_text(text: str, sec: dict) -> str:
     return "\n".join(lines[sec["line_start"] - 1: sec["line_end"]])
 
 
-BATCH_CHARS = 12000      # about 3k tokens of BRD text per helper batch
-DELEGATE_ABOVE = 24000   # above this much BRD text, bulk reading belongs in helper agents, not the main session
+BATCH_CHARS = 30000      # about 7.5k tokens of BRD text per helper batch (env BA_BATCH_CHARS or --batch-chars overrides)
+DELEGATE_ABOVE = 60000   # above this much BRD text (~15k tokens), reading in helper agents beats reading here (env BA_DELEGATE_ABOVE or --delegate-above)
 
 
-def outline_batches(meta: dict) -> dict:
-    """Section sizes and a batching plan, so the main session never has to read a large BRD itself: when `delegate` is
-    true, hand each batch of section IDs to a helper agent that returns a short summary and a file path."""
+def _limit(value, env: str, default: int) -> int:
+    for v in (value, os.environ.get(env)):
+        try:
+            if v is not None and int(v) > 0:
+                return int(v)
+        except (TypeError, ValueError):
+            pass
+    return default
+
+
+def outline_batches(meta: dict, delegate_above: int | None = None, batch_chars: int | None = None) -> dict:
+    """Section sizes and a batching plan. When `delegate` is true the BRD is large enough that helper agents may be worth
+    their cold start (each re-reads its batch): the main session asks once and otherwise reads one section at a time."""
+    limit = _limit(batch_chars, "BA_BATCH_CHARS", BATCH_CHARS)
     sizes = [(s["section_id"], s["title"], len(section_text(meta["text"], s))) for s in meta["sections"]]
     batches, cur, used = [], [], 0
     for sid, _, n in sizes:
-        if cur and used + n > BATCH_CHARS:
+        if cur and used + n > limit:
             batches.append(cur)
             cur, used = [], 0
         cur.append(sid)
@@ -283,7 +295,7 @@ def outline_batches(meta: dict) -> dict:
         batches.append(cur)
     total = sum(n for _, _, n in sizes)
     return {"outline": [{"id": sid, "title": t, "chars": n} for sid, t, n in sizes], "total_chars": total,
-            "delegate": total > DELEGATE_ABOVE, "batches": batches}
+            "delegate": total > _limit(delegate_above, "BA_DELEGATE_ABOVE", DELEGATE_ABOVE), "batches": batches}
 
 
 def scan_injection(text: str) -> list[dict]:

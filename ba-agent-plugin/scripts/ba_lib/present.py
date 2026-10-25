@@ -7,6 +7,8 @@ no composition tokens and cannot drift from the rules (which options exist, when
 `inline: true` means the dialog already carries everything the human needs, so **no separate chat message is sent**.
 `card` is the compact markdown for when it does not (long history, a story's acceptance criteria). Without the dialog
 tool, `card` (when present) + `fallback` replace it; for an inline gap `fallback` is the whole message.
+`fallback` is built only on request (`--fallback`, after the dialog tool failed): it repeats the dialog text, so by default
+it is not sent.
 """
 from __future__ import annotations
 
@@ -56,7 +58,7 @@ def gap_options(g: dict, carry_ok: bool, blocker_why: str | None, suggested: dic
 
 
 def gap_view(g: dict, ctx: dict) -> dict:
-    """`ctx`: reqmap (id → requirement), blocks_stories, carry_ok, blocker_why, left, story_ids, owner_missing."""
+    """`ctx`: reqmap (id → requirement), blocks_stories, carry_ok, blocker_why, left, story_ids, owner_missing, fallback."""
     reqmap = ctx["reqmap"]
     reqs = [reqmap[r] for r in g["impacted_requirement_ids"] if r in reqmap]
     flags = ["blocks stories"] if ctx["blocks_stories"] else []
@@ -108,11 +110,11 @@ def gap_view(g: dict, ctx: dict) -> dict:
             card.append(f"**Open conflict:** {short(c.get('description'), 240)}")
     if g.get("needs_impact_review"):
         card.append("**This gap needs an impact review after a BRD change** — check the question still stands.")
-    reply = _fallback(options, "Type an answer or instruction")
     dialog = {"header": g["gap_id"], "question": q, "options": options, "multiSelect": False}
+    reply = _fallback(options, "Type an answer or instruction") if ctx.get("fallback") else None
     if inline:  # the dialog text already says everything: no card, and without the tool the question itself is the message
-        return {"inline": True, "dialog": dialog, "fallback": f"{q}\n{reply}"}
-    return {"inline": False, "card": "\n".join(card), "dialog": dialog, "fallback": reply}
+        return {"inline": True, "dialog": dialog, **({"fallback": f"{q}\n{reply}"} if reply else {})}
+    return {"inline": False, "card": "\n".join(card), "dialog": dialog, **({"fallback": reply} if reply else {})}
 
 
 # ---------------------------------------------------------------- stories
@@ -198,7 +200,7 @@ def story_card(s: dict, live_gaps: list[str], blockers: list[str], update_ctx: l
 
 
 def story_view(s: dict, ctx: dict) -> dict:
-    """`ctx`: blockers, bucket, live_gaps, update_ctx, position ('2 of 6' or None)."""
+    """`ctx`: blockers, bucket, live_gaps, update_ctx, position ('2 of 6' or None), fallback."""
     ir = s.get("impact_review") or {}
     flagged = bool(ir.get("pending"))
     options = story_options(s, ctx["blockers"], flagged, ir.get("cause"), ctx["bucket"])
@@ -208,4 +210,4 @@ def story_view(s: dict, ctx: dict) -> dict:
             if can else f"cannot be approved yet ({'; '.join(blocker_tags(ctx['blockers']))}). Pick an option, or type edit suggestions in “Other”."))
     return {"card": story_card(s, ctx["live_gaps"], ctx["blockers"], ctx["update_ctx"]),
             "dialog": {"header": s["story_id"], "question": q, "options": options, "multiSelect": False},
-            "fallback": _fallback(options, "Type suggestions")}
+            **({"fallback": _fallback(options, "Type suggestions")} if ctx.get("fallback") else {})}

@@ -13,7 +13,7 @@ import sys
 import traceback
 from pathlib import Path
 
-from . import adr, discover, overview, baseline as basemod, changes as changemod, checks, gaps as gapmod, ingest, reqs as reqmod, snapshots, stories as storymod
+from . import adr, convert as convmod, discover, helptext, overview, baseline as basemod, changes as changemod, checks, gaps as gapmod, ingest, reqs as reqmod, snapshots, stories as storymod, sync
 from .project import Project
 from .util import BAError, human_ist, sha256_file
 
@@ -75,6 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="ba.py", description="Interactive BA plugin — deterministic workflow core")
     ap.add_argument("--root", help="project folder (or env BA_PROJECT_ROOT, or cwd if it is a project)")
     ap.add_argument("--args-file", help="JSON file supplying option values (avoids shell quoting)")
+    ap.add_argument("--changed-files", action="store_true", help="report changed_files / removed_files: every project file this command wrote, moved or removed (env BA_CHANGED_FILES=1)")
     ap.add_argument("--pretty", action="store_true", help="indent the JSON output (default is compact: it costs fewer tokens)")
     sub = ap.add_subparsers(dest="group", required=True)
 
@@ -92,20 +93,24 @@ def build_parser() -> argparse.ArgumentParser:
     opt = lambda n, **k: (n, k)
     sub.add_parser("status").add_argument("--json", action="store_true")
     sub.add_parser("validate")
+    mf = sub.add_parser("manifest"); mf.add_argument("--write", action="store_true"); mf.add_argument("--full", action="store_true")
     t = sub.add_parser("trace"); t.add_argument("--write", action="store_true")
     sub.add_parser("recover")
     sub.add_parser("files")
+    cv = sub.add_parser("convert"); cv.add_argument("--in", dest="src", required=True); cv.add_argument("--out")
+    hp = sub.add_parser("help"); hp.add_argument("topic", nargs="?"); hp.add_argument("what", nargs="?")
     fd = sub.add_parser("find"); fd.add_argument("--dir", help="folder to look in (default: --root, else the current folder)")
     sub.add_parser("complete")
     sub.add_parser("report")
     f = sub.add_parser("fingerprint"); f.add_argument("file")
     i = sub.add_parser("init")
     i.add_argument("--brd", required=True); i.add_argument("--name"); i.add_argument("--copy-source", action="store_true")
+    i.add_argument("--delegate-above", type=int); i.add_argument("--batch-chars", type=int)
 
     grp("source", {"check": [opt("--no-record", action="store_true")],
                    "accept": [opt("--by-name"), opt("--by-role"), opt("--statement")],
                    "section": [pos("section_id"), opt("--allow-changed", action="store_true")],
-                   "outline": [], "history": []})
+                   "outline": [opt("--delegate-above", type=int), opt("--batch-chars", type=int)], "history": []})
     grp("changes", {"check": [opt("--no-record", action="store_true")],
                     "apply": [opt("--id"), opt("--by-name"), opt("--by-role"), opt("--statement")],
                     "list": [opt("--status")], "show": [pos("id")], "status": [],
@@ -118,7 +123,7 @@ def build_parser() -> argparse.ArgumentParser:
     grp("owner", {"set": [opt("--name"), opt("--role"), opt("--gap"), opt("--statement")],
                   "unknown": [opt("--choice", default="pause")], "show": []})
     grp("gaps", {"add": [opt("--file")], "commit": [opt("--cross-pass-done", action="store_true")],
-                 "next": [opt("--limit", type=int, default=1), opt("--carried", action="store_true"), opt("--id")],
+                 "next": [opt("--limit", type=int, default=1), opt("--carried", action="store_true"), opt("--id"), opt("--fallback", action="store_true")],
                  "list": [opt("--status")], "triage": [opt("--status")],
                  "carry-forward-all": [opt("--by-name"), opt("--by-role"), opt("--reason"), opt("--reason-file")]})
     resolve_opts = [pos("id"), opt("--answer-id"), opt("--interpretation"), opt("--interpretation-file"), opt("--closed-by-name"),
@@ -145,7 +150,7 @@ def build_parser() -> argparse.ArgumentParser:
                      "show": [opt("--version", type=int)]})
     grp("story", {"add": [opt("--file")], "show": [pos("id")], "gaps": [opt("--requirements")], "triage": [], "keep": [pos("id")],
                   "next": [opt("--id"), opt("--deferred", action="store_true"), opt("--unapproved", action="store_true"), opt("--batch", type=int, default=1),
-                           opt("--full", action="store_true")],
+                           opt("--full", action="store_true"), opt("--fallback", action="store_true")],
                   "approve": [pos("id"), opt("--version", type=int), opt("--statement"), opt("--approver-name"), opt("--approver-role")],
                   "edit": [pos("id"), opt("--file"), opt("--reason")],
                   "defer": [pos("id"), opt("--version", type=int), opt("--reason")], "revisit": [pos("id")],
@@ -165,10 +170,15 @@ def _apply_args_file(ns, path):
         setattr(ns, k.replace("-", "_"), v)
 
 
-def _open(a) -> Project:
+def _root(a) -> str | None:
     root = a.root or os.environ.get("BA_PROJECT_ROOT")
     if not root and (Path.cwd() / "state" / "workflow.json").exists():
         root = str(Path.cwd())
+    return root
+
+
+def _open(a) -> Project:
+    root = _root(a)
     if not root:
         raise BAError("NO_PROJECT", "Pass --root <project folder> (the folder the user confirmed for outputs).")
     return Project.open(root)
@@ -179,7 +189,17 @@ READ_ONLY = {"show", "list", "pairs", "outline", "history", "triage", "next", "g
 
 
 def run(a) -> dict | str:
+    want = (a.changed_files or os.environ.get("BA_CHANGED_FILES", "").lower() in TRUE) and a.group not in ("help", "find", "fingerprint")
+    root = _root(a) if want else None
+    before = sync.sig(root) if root else None
     p, out = _run(a)
+    out = _finish(a, p, out)
+    if before is not None and isinstance(out, dict):
+        out.update(sync.changed(before, sync.sig(root)))
+    return out
+
+
+def _finish(a, p, out) -> dict | str:
     if p is not None and a.group not in ("status", "validate", "trace", "files") and getattr(a, "action", None) not in READ_ONLY:
         adr.refresh(p)  # ADR-LOG.md at the top of every artifact folder: who decided / approved what, when (IST)
         overview.refresh(p)  # START-HERE.md: where everything is and where the project stands
@@ -206,6 +226,10 @@ def _run(a):
         return None, {"file": str(fp.resolve()), "fingerprint": sha256_file(fp)}
     if g == "find":
         return None, discover.find(a.dir or a.root)
+    if g == "help":
+        return None, helptext.render(build_parser(), a.topic, a.what)
+    if g == "convert":
+        return None, convmod.convert(a.root or os.environ.get("BA_PROJECT_ROOT"), a.src, a.out)
     if g == "init":
         if not a.root:
             raise BAError("NO_PROJECT", "init requires --root <project folder> explicitly confirmed by the user.")
@@ -217,9 +241,10 @@ def _run(a):
                 "source": {"format": meta["format"], "fingerprint": meta["fingerprint"], "sections": len(meta["sections"]),
                            "parser": meta["parser"]},
                 "warnings": meta["warnings"], "instruction_like_lines": len(meta["injection_suspects"]),
-                **ingest.outline_batches(p.load_source(verify=False)),
-                "next": "Decompose the BRD into atomic requirements (`req add`). If `delegate` is true, give each batch of sections "
-                        "to a `ba-agent:requirement-analyst` helper (in parallel) instead of reading the BRD here."}
+                **ingest.outline_batches(p.load_source(verify=False), a.delegate_above, a.batch_chars),
+                "next": "Decompose the BRD into atomic requirements (`req add`). If `delegate` is true, ask the user once whether to use "
+                        "`ba-agent:requirement-analyst` helpers (one per batch, in parallel); if they decline or the Agent tool is not "
+                        "allowed, read the batches one section at a time here (`source section`)."}
     p = _open(a)
     a._before = p._dir_sig()
     key = (g, act if (g, act) in GUARDED or (g, act) in CHECKED else None)
@@ -242,6 +267,8 @@ def _dispatch(a, p, g, act):
         return r if a.json else checks.status_text(r)
     if g == "validate":
         return checks.validate_project(p)
+    if g == "manifest":
+        return sync.manifest(p.root, a.write, a.full)
     if g == "trace":
         return checks.traceability(p, a.write)
     if g == "recover":
@@ -276,7 +303,7 @@ def _dispatch(a, p, g, act):
             return reqmod.source_section(p, a.section_id, a.allow_changed)
         if act == "history":
             return snapshots.index(p)
-        return ingest.outline_batches(p.load_source(verify=False))
+        return ingest.outline_batches(p.load_source(verify=False), a.delegate_above, a.batch_chars)
     if g == "req":
         if act == "add":
             return reqmod.add_requirements(p, _json_file(a.file))
@@ -309,7 +336,7 @@ def _dispatch(a, p, g, act):
         if act == "commit":
             return gapmod.commit_analysis(p, a.cross_pass_done)
         if act == "next":
-            return gapmod.next_gaps(p, a.limit, a.carried, a.id)
+            return gapmod.next_gaps(p, a.limit, a.carried, a.id, a.fallback)
         if act == "triage":
             return gapmod.triage(p, a.status)
         if act == "carry-forward-all":
@@ -364,7 +391,7 @@ def _dispatch(a, p, g, act):
         if act == "add":
             return storymod.add_stories(p, _json_file(a.file))
         if act == "next":
-            return storymod.next_story(p, a.id, a.deferred, a.batch, a.unapproved, a.full)
+            return storymod.next_story(p, a.id, a.deferred, a.batch, a.unapproved, a.full, a.fallback)
         if act == "show":
             return storymod._load(p, a.id)[1]
         if act == "triage":

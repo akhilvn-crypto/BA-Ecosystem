@@ -13,7 +13,8 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-EXCLUDE_DIRS = {"__pycache__", ".git", "tests", "dist", ".pytest_cache"}
+EXCLUDE_DIRS = {"__pycache__", ".git", "tests", "dist", ".pytest_cache", ".in_use"}
+EXCLUDE_FILES = {"CHANGELOG.md", "docs/TEST_REPORT.md"}  # housekeeping: not needed at run time
 EXCLUDE_SUFFIX = {".pyc", ".tmp", ".bak"}
 
 
@@ -29,7 +30,7 @@ def main(argv=None) -> int:
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as z:
         for f in sorted(ROOT.rglob("*")):
             rel = f.relative_to(ROOT)
-            if f.is_dir() or EXCLUDE_DIRS & set(rel.parts) or f.suffix in EXCLUDE_SUFFIX:
+            if f.is_dir() or EXCLUDE_DIRS & set(rel.parts) or f.suffix in EXCLUDE_SUFFIX or rel.as_posix() in EXCLUDE_FILES:
                 continue
             z.write(f, rel.as_posix())
             n += 1

@@ -3,6 +3,27 @@
 **Date:** 2026-10-22 (IST) · **Environment:** Windows 10 Pro 10.0.19045, Python 3.14.8, Claude Code CLI 2.1.308, Git Bash + PowerShell.
 **Not available / not run:** Claude Cowork, claude.ai chat, macOS/Linux, Python < 3.14 (see "Tests not run").
 
+## 0. 1.10.0 prompt-surface before/after (2026-10-25)
+
+Measured with `python -m tests.measure_efficiency` on the 1.9.0 tree (`git archive HEAD`) and on the working tree. Bytes; tokens are about bytes / 4.
+
+| Surface | 1.9.0 | 1.10.0 |
+|---|---|---|
+| Skill descriptions always loaded (chars, plugin's own metric) | 1,928 | 200 |
+| Gap session (router + gap loop) | 11,583 | 11,323 |
+| Gap session with validate and actions | 19,469 | 19,216 |
+| Story session | 11,446 | 11,196 |
+| `/triage-gaps` (command + router + loop + triage) | 15,520 | 14,374 |
+| `/triage-stories` | 18,311 | 16,920 |
+| `gaps next --id` packet, mean of 3 gaps (CLI output) | 1,539 | 1,076 (-30%) |
+| `story next --id US-003` (CLI output) | 2,097 | 2,002 |
+| `references/cli-reference.md` | 12,336 | deleted; `help gap resolve` is about 0.9 KB |
+| Delegation thresholds (`DELEGATE_ABOVE` / `BATCH_CHARS`) | 24,000 / 12,000 | 60,000 / 30,000 |
+
+Reading these honestly: the per-stage prompt surface fell by only 1 to 8 %, because the router gained the optional-helpers and file-bridge lines while the stage files shrank. The larger gains are elsewhere: ten skill listings no longer advertised in every session, about 3 K tokens saved per CLI lookup, one third less per gap packet, no transcription of PDF/DOC/RTF/XLSX BRDs (about twice the document size) when a converter exists, and no helper agents spawned by default. The work order's estimate of 1 to 2 K tokens per entry command from slimmer commands was not reached (about 0.3 K measured).
+
+Not run: Claude Cowork (so the file-bridge protocol is inferred, not observed), `convert` with LibreOffice or `pypdf` (only `pdftotext` and a hand-built XLSX were exercised), a live session with the one-skill layout.
+
 ## 1. Automated tests — 300 run, 299 passed, 1 skipped, 0 failed (re-run 2026-10-25 for 1.9.0; adds `test_gap_folders` (10: gap folders by status, migration of a 1.8 layout, one-step close), `test_cowork` (10: `find`, START-HERE.md, PDF hint, default baseline approver) and `test_adr`)
 
 Command (from the plugin folder): `python -m unittest discover -s tests -t . -v` → `Ran 276 tests in ~155s — OK (skipped=1)` (Python 3.14.8, Windows 10). 1.7.0 added 5 tests in `test_carry_forward/` (bulk carry-forward: offer hint, per-gap records and audit, identity/owner/nothing-to-carry refusals, material gaps skipped, CLI). The 235 tests that existed before 1.6.0 all still pass (only their file paths were updated for the `md/` + `json/` layout); the 9 new tests are in `test_layout/` (path mapping, populated `md/` and `json/` folders at every stage, saved-files receipt, migration of a flat project, no overwrite of a conflicting loose file, CLI `files_saved` and `files`). Per-file counts of older areas were last measured at the version noted in their row.

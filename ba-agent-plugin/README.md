@@ -6,7 +6,7 @@ Turn a Business Requirements Document (BRD) into **traceable atomic requirements
 
 | Stage | What happens | Human control |
 |---|---|---|
-| Intake | BRD (`.md`, `.txt`, `.docx`) is fingerprinted and outlined; the original is never modified | You pick the BRD and the output folder |
+| Intake | BRD (`.md`, `.txt`, `.docx`; PDF, DOC, RTF and XLSX are converted to Markdown by `convert` when a converter is installed) is fingerprinted and outlined; the original is never modified | You pick the BRD and the output folder |
 | Requirements | Atomic `REQ-###` records with verbatim source quotes and section references | — |
 | Gap analysis | Evidence-based gaps (10-category taxonomy, justified priority, one question each) + cross-requirement pass | — |
 | Gap resolution | Asks **who the decision owner is (name + role) before the first gap**; presents gaps highest priority first — Critical/High/material gaps with Other / Explain This Question / Answer Later / Defer This Gap, Medium/Low gaps with Suggested Answer (evidence only) / Other / Explain This Question / Carry Forward; validates every answer against the BRD, requirements, decisions and business rules; closes a gap only with a validated, conflict-free answer and an IST audit record; a carried-forward gap stays OPEN until resolved | You answer, confirm, carry forward, answer later, defer (with a reason), reopen |
@@ -19,14 +19,14 @@ Everything is saved the moment it exists - requirements as they are captured, ga
 
 ## Built to stay cheap in tokens
 
-Each stage reads only what it needs. Skills are short loops with on-demand `references/`; the core builds the choice dialog and card for each gap or story so the model relays them instead of writing them (a gap whose dialog says everything is sent as the dialog alone, queues as one summary line); CLI results are compact and omit empty fields; large BRDs are batched out to helper agents. A gap session loads ~10 KB of instructions instead of ~40 KB, and typical CLI results are 26-82% smaller. Details: [Architecture → Context engineering](docs/ARCHITECTURE.md); reproduce with `python -m tests.measure_efficiency`.
+Each stage reads only what it needs. One skill (`ba-workflow`) is advertised; stage guides are short loops loaded on demand from `references/stages/`; the core builds the choice dialog and card for each gap or story so the model relays them instead of writing them (a gap whose dialog says everything is sent as the dialog alone, queues as one summary line); CLI results are compact and omit empty fields; large BRDs are batched out to helper agents. A gap session loads ~10 KB of instructions instead of ~40 KB, and typical CLI results are 26-82% smaller. Details: [Architecture → Context engineering](docs/ARCHITECTURE.md); reproduce with `python -m tests.measure_efficiency`.
 
 ## Install and run
 
 **Claude Code CLI** (tested): `claude --plugin-dir /path/to/ba-agent-plugin` (one session), then `/ba-agent:start path/to/BRD.docx`.
 Persistent (not run here, as it changes your Claude config): from the folder that contains `.claude-plugin/marketplace.json` (`D:\BA-Agents`) run `claude plugin marketplace add ./` then `claude plugin install ba-agent@ba-agents`.
 
-**Claude Cowork** (not verified in this environment): build the upload file with `python scripts/package_plugin.py` → `dist/ba-agent-1.9.0.zip`, then *Customize → Plugins → Add → Upload plugin*. Commands appear as `/ba-agent:start` etc. Cowork's local-folder and script-execution behaviour is not documented well enough to claim support — see the compatibility report.
+**Claude Cowork** (not verified in this environment): build the upload file with `python scripts/package_plugin.py` → `dist/ba-agent-1.10.0.zip`, then *Customize → Plugins → Add → Upload plugin*. Commands appear as `/ba-agent:start` etc. Cowork's local-folder and script-execution behaviour is not documented well enough to claim support — see the compatibility report.
 
 Commands: `/ba-agent:start [BRD or project folder]` · `/ba-agent:status` · `/ba-agent:review` · `/ba-agent:triage-gaps` · `/ba-agent:triage-stories` · `/ba-agent:changes`. You normally only need `start`.
 

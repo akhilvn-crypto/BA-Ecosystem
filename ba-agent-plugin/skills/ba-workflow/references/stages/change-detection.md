@@ -1,8 +1,3 @@
----
-name: change-detection
-description: Detect and explain changes to the BRD or approved stories before anything is updated; walk the review until every affected artifact is reconciled. Load only when `changes check` reports a change.
----
-
 # Change detection and impact analysis
 
 The core keeps a **snapshot of the accepted BRD** and, for every approved story, a **hash and an immutable copy of exactly what was approved** (`snapshots/`). A change is anything that makes the files differ from those. Detection and explanation are free of side effects; only a named person can make the core act on a change.
@@ -18,7 +13,7 @@ The core keeps a **snapshot of the accepted BRD** and, for every approved story,
 
 ## The loop (material changes)
 1. **Show** each change in chat: one line summary, the old → new text, then the impact as a short list (requirements, gaps, decisions, stories incl. *approved* ones whose approval stays on record, baseline) and the required actions. Say plainly that **nothing downstream has changed yet**. The original BRD is only ever read.
-2. **Ask** (short `AskUserQuestion`; details stay in chat — see `../ba-workflow/references/choice-prompts.md`): `Apply impact`, `Review later`, plus `Open CHG file` if they want the detail. For an edited approved story: `Apply (keep edit as new version)`, `Review later`. `Review later` changes nothing; the change stays `DETECTED` and is raised again next time. Silence is not consent.
+2. **Ask** (short `AskUserQuestion`; details stay in chat — see `../choice-prompts.md`): `Apply impact`, `Review later`, plus `Open CHG file` if they want the detail. For an edited approved story: `Apply (keep edit as new version)`, `Review later`. `Review later` changes nothing; the change stays `DETECTED` and is raised again next time. Silence is not consent.
 3. **Apply** only on an explicit yes, with the person's name, role and own words: `changes apply --id CHG-nnn --by-name … --by-role … --statement "<their words>"`. Never invent them. This is not an approval of the new content — it authorises the core to mark the affected artifacts stale / under review:
    - BRD change → requirements in changed/deleted sections `NEEDS_REVIEW`, linked gaps and stories flagged (approved stories **keep their approval** and are flagged with the reason), baseline stale, workflow reopened to gap analysis, fingerprint **not** replaced yet.
    - Edited approved story → what was approved is put back unchanged (the edit is kept verbatim in `snapshots/stories/…observed-CHG-nnn.*`), the edit becomes the next version as a `CANDIDATE` that needs re-approval, the approval history is untouched. If the edit cannot become a valid version the approved story is flagged for review instead.
@@ -31,8 +26,8 @@ The core keeps a **snapshot of the accepted BRD** and, for every approved story,
 5. When the last item is closed the record becomes `RECONCILED` (audit `CHANGE_RECONCILED`). `complete` stays PARTIAL until every record is reconciled.
 
 ## Rules
-- Never edit state/story files to "fix" a change, never delete a change record, never re-run `changes apply` to hide something. A newer BRD edit supersedes an unapplied record (`SUPERSEDED`); putting the file back reverts it (`REVERTED`) — both are recorded.
+- Never delete a change record or re-run `changes apply` to hide something (files are changed only through the core: `../artifact-integrity.md`). A newer BRD edit supersedes an unapplied record (`SUPERSEDED`); putting the file back reverts it (`REVERTED`) — both are recorded.
 - Changes made by you through `story edit` are recorded too (origin `BA_AGENT`); an edit that only changes wording layout of an approved story keeps its approval and version.
 - `story history US-nnn` shows every approved version with approver, their words and the snapshot; `source history` lists the BRD versions.
 - Projects created before change detection have no BRD snapshot yet: the core stores one on the first check while the BRD still matches (line-level diffs are unavailable if it already changed; say so). Approved stories are adopted as-is the first time.
-- Same commands in Claude Code and Cowork. Cowork has no hooks: the checks run because the core runs them, and `/ba-agent:start`, `/ba-agent:review` and `/ba-agent:changes` call `changes check` first. Use the numbered-list fallback where `AskUserQuestion` is unavailable.
+- Same commands in Claude Code and Cowork. Cowork has no hooks: the checks run because the core runs them, and `/ba-agent:start`, `/ba-agent:review` and `/ba-agent:changes` call `changes check` first. On a file bridge, stage fresh copies of the BRD and `stories/approved/` first (`../cowork-sync.md`): the check cannot see edits that were never staged.
