@@ -259,22 +259,22 @@ class CoverageAndCompletionTests(BATest):
     def test_validate_detects_tampering(self):
         p = self.to_baseline()
         self.assertTrue(checks.validate_project(p)["ok"])
-        gaps = p.read_json("gaps/json/gap-register.json")
+        gaps = p.read_json("state/gap-register.json")
         gaps["gaps"][0]["closed_by_name"] = None
-        p.write_json("gaps/json/gap-register.json", gaps)
+        p.write_json("state/gap-register.json", gaps)
         v = checks.validate_project(p)
         self.assertFalse(v["ok"])
         self.assertTrue(any("missing closure metadata" in e for e in v["errors"]))
 
     def test_resolved_without_audit_event_is_detected_and_repaired_by_recover(self):
         p = self.with_gaps()
-        gaps = p.read_json("gaps/json/gap-register.json")
+        gaps = p.read_json("state/gap-register.json")
         g = gaps["gaps"][0]
         g.update(status="RESOLVED", decision_id="DEC-001", resolution="x", decision_owner_name="A B", decision_owner_role="PO",
                  closed_by_name="A B", closed_by_role="PO", closed_at_ist="2026-10-22T18:45:00+05:30", closure_summary="x",
                  closure_validation={"status": "PASSED", "validated_at_ist": "2026-10-22T18:45:00+05:30"})
         g["history"].append({"from": "OPEN", "to": "RESOLVED", "at_ist": "2026-10-22T18:45:00+05:30"})
-        p.write_json("gaps/json/gap-register.json", gaps)
+        p.write_json("state/gap-register.json", gaps)
         v = checks.validate_project(p)
         self.assertFalse(v["ok"])
         out = checks.recover(p)

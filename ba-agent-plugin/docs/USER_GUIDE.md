@@ -7,7 +7,7 @@ claude --plugin-dir D:\BA-Agents\ba-agent-plugin
 > /ba-agent:start D:\docs\MyProject-BRD.docx
 ```
 
-Claude greets you, proposes an output folder (default: the folder that contains your BRD, i.e. the folder you attached) and asks you to confirm it. Nothing is written elsewhere; your BRD is never changed. If the BRD is a PDF you will be asked for a `.docx`/`.md`/`.txt` export.
+Claude looks in the folder you attached (or the one you name) for the BRD, proposes it with an output folder (the folder that contains the BRD) in one question, and starts. Nothing is written elsewhere; your BRD is never changed. A PDF, Word 97 `.doc`, RTF or Excel BRD works too: Claude reads it and keeps a faithful Markdown copy in `source/` - you are not asked to convert anything.
 
 ## 2. What you will be asked
 
@@ -17,8 +17,8 @@ Claude greets you, proposes an output folder (default: the folder that contains 
    - **Critical and High gaps, and any security/compliance-sensitive gap**: **Explain This Question**, **Answer Later** (no reason needed; the gap stays open and is asked again — the stories it blocks stay blocked) or **Defer This Gap** (you give a reason, your name and role, and a revisit date if you have one; the gap is marked DEFERRED and still blocks stories). These gaps cannot be carried forward.
    **Before the first Medium/Low gap** you are asked once: **Go through each** (one gap at a time, as above) or **Carry all forward** (all eligible Medium/Low gaps stay open in one step; you give your name and role once). Critical/High and sensitive gaps are never carried forward this way.
    Your answer is checked against the BRD, related requirements, approved decisions and business rules; if it conflicts you are asked to clarify before the gap can be resolved.
-3. **Closing a gap** — Claude summarises the meaning it will record and asks you to confirm and to state your name and role as the person closing it. If the answer contradicts the BRD or an earlier decision you are asked to clarify, explicitly confirm a change (named authoriser), or defer.
-4. **Baseline** — you confirm the consolidated requirements baseline.
+3. **Closing a gap** — when the decision owner answers and the answer is complete and consistent with the BRD and earlier decisions, the gap is closed straight away (you are not asked to confirm again or to give a closer's name) and moves to `gaps/resolved/`. If the answer contradicts the BRD or an earlier decision you are asked to clarify, explicitly confirm a change (named authoriser), or defer. If someone other than the decision owner answered, the owner is asked to confirm.
+4. **Baseline** — you confirm the consolidated requirements baseline (recorded as approved by the decision owner unless you name someone else).
 5. **Stories** — one at a time, each in a prompt with a text box. A story that depends on an open (carried-forward) gap shows the gap, the unresolved question, its potential impact and its readiness; working assumptions are labelled *not approved*. When you later answer a carried-forward gap (ask Claude to revisit it, or `/ba-agent:review`), the baseline is refreshed, the stories that named the gap are updated with the decision and shown to you again for approval (a changed story is a new version; the version you approved stays in force until you approve the new one). Type **approve**, type your **suggestions**, or type **not approved** (or pick **defer**). Claude records your own words. Suggestions create a new story version that is shown again and needs approval again; a story you did not approve never reaches `stories/approved/`.
 
 ## 3. Where things are saved
@@ -28,7 +28,7 @@ Claude greets you, proposes an output folder (default: the folder that contains 
   Every folder below has two subfolders:  md/ = files you read,  json/ = records the tool uses
   extracted/    md/brd-outline.md · json/source-metadata.json
   atomic-requirements/  md/REQ-001.md …  json/REQ-001.json …   (atomic requirements; open the md folder)
-  gaps/         md/GAP-001.md …  json/gap-register.json
+  gaps/         open/ deferred/ resolved/   (each with md/GAP-001.md and json/GAP-001.json; a gap moves folder when its status changes)
   decisions/    md/DEC-001.md …  json/decision-log.jsonl
   baselines/    md/baseline-v1.md …  json/baseline-v1.json, baseline-manifest.json
   stories/      candidates/  approved/  unapproved/  deferred/  archive/   (each with md/US-001.md and json/US-001.json)
@@ -39,7 +39,7 @@ Claude greets you, proposes an output folder (default: the folder that contains 
 ```
 **Files are saved as each stage finishes**, straight into your project folder, and Claude tells you the folder to open before it asks you to review or approve (no copying needed). Say "where are my files?" at any time and it lists every folder.
 
-**Only `stories/approved/` holds approved work** (open `stories/approved/md/`). Stories you marked *not approved* are saved in `stories/unapproved/` (with your note in their review history); open gaps are in `gaps/md/` (one `GAP-xxx.md` each; the register is `gaps/json/gap-register.json`). `archive/` keeps every superseded story version.
+**Only `stories/approved/` holds approved work** (open `stories/approved/md/`). Stories you marked *not approved* are saved in `stories/unapproved/` (with your note in their review history). Gaps are saved to `gaps/open/md/` as soon as they are found and move to `gaps/resolved/md/` when you answer them (deferred ones wait in `gaps/deferred/md/`). `archive/` keeps every superseded story version. `START-HERE.md` at the top of the folder lists every folder with its current count, so you can open the folder and see where things stand without asking.
 
 ## 4. Resume, status, review
 

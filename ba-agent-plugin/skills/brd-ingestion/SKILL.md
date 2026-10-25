@@ -5,9 +5,9 @@ description: Select the BRD and project folder, verify access, and initialise th
 
 # BRD ingestion
 
-1. **Source and output folder** (ask in one message if not known): BRD path; output folder (propose the BRD's own folder, i.e. the folder the user attached in Cowork, so the results appear right inside it). Confirm both back to the user. The BRD stays where it is.
+1. **Source and output folder.** Run `find --dir <folder>` first (the folder the user attached in Cowork, the path they gave, or the current folder): it lists projects and likely BRDs. Ask only what `find` could not answer, in one message: which file, and confirm the output folder (propose the BRD's own folder so the results appear right beside it). The BRD stays where it is.
 2. **Access check:** you must be able to read the BRD and create files in the output folder with this surface's tools. If not, say so and offer a supported alternative (Cowork desktop with a selected folder, or Claude Code CLI). Do not continue as if it worked.
-3. **Formats:** Markdown, plain text and DOCX are supported. PDF, DOC, RTF and XLSX are **not** (no extraction library without installing packages) — ask for a `.docx`/`.md`/`.txt` export; offer to install a PDF library only if the user wants that, and ask first. Images and headers/footers inside DOCX are not extracted — relay the warning if shown.
+3. **Formats:** Markdown, plain text and DOCX are read by the core. For a PDF, DOC, RTF or XLSX do **not** send the user away and install nothing: read it yourself with your own file tools, write its text faithfully (headings, lists, tables; nothing added, reworded or dropped) to `<output folder>/source/<same name>.md`, say so in one line, and `init` that `.md`. Requirement quotes are checked against that copy, so a sloppy conversion is rejected, not hidden. Images and headers/footers inside DOCX are not extracted - relay the warning if shown.
 4. **Initialise:**
    `python "${CLAUDE_PLUGIN_ROOT}/scripts/ba.py" --root "<output folder>" init --brd "<BRD path>" [--name <short-name>] [--copy-source]`
    (`--copy-source` copies the BRD into `source/` so section-level change diffs keep the old text; ask only if the user cares about history.)

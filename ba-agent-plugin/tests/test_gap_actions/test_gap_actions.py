@@ -142,7 +142,7 @@ class DeferTests(Base):
                          ("Sam Dsouza", "Priya Nair", "Waiting for Finance sign-off", d["at_ist"]))
         self.assertEqual(g["history"][-1]["to"], "DEFERRED")
         self.assertTrue(out["blocks_stories"])
-        self.assertIn("Sam Dsouza", (p.root / "gaps/md/GAP-001.md").read_text(encoding="utf-8"))
+        self.assertIn("Sam Dsouza", (p.root / "gaps/deferred/md/GAP-001.md").read_text(encoding="utf-8"))
         self.assertTrue(checks.validate_project(p)["ok"])
 
     def test_deferred_is_never_resolved_and_high_priority_still_blocks(self):
@@ -188,7 +188,7 @@ class DeferTests(Base):
         self.assertEqual(g["deferral_history"][0]["reason"], "Waiting for Finance")
         gapmod.defer(p, "GAP-001", "Still waiting", by_name=OWNER[0], by_role=OWNER[1])
         self.assertEqual(len(self.audit(p, "GAP_DEFERRED")), 2, "both deferrals stay in the audit trail")
-        self.assertIn("Earlier deferral", (p.root / "gaps/md/GAP-001.md").read_text(encoding="utf-8"))
+        self.assertIn("Earlier deferral", (p.root / "gaps/deferred/md/GAP-001.md").read_text(encoding="utf-8"))
 
 
 class ValidatedResolutionTests(Base):

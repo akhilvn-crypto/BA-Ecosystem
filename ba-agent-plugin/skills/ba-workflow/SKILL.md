@@ -15,6 +15,7 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/ba.py" --root "<project folder>" <group> <
 - If `${CLAUDE_PLUGIN_ROOT}` was not substituted, locate `scripts/ba.py` in this plugin's folder (two levels above this skill).
 - Output is compact JSON with `"ok": true|false`; **empty values are omitted, so absent means none**. On `false`, `error.code` and `error.message` say what the human or you must do. Never work around a refusal (e.g. by editing state files).
 - Free text with quotes/newlines/unicode: a JSON file and `--args-file <file>`. Lists of requirements/gaps/stories: JSON files via `--file`. Every helper file lives under `<project>/state/inbox/` (`scripts/safe_write.py`, or Write with that exact path) — never outside the confirmed project folder.
+- `find [--dir <folder>]` needs no project: it lists existing BA projects and likely BRDs in a folder, so you never ask for a path the folder already shows.
 - Exact options: `references/cli-reference.md`, only when you need one.
 
 ## Context discipline (every stage)
@@ -31,7 +32,7 @@ Tokens are a budget: each stage reads only what it needs and hands the rest to t
 
 | Stage | Do | Skill |
 |---|---|---|
-| (none) | choose BRD + output folder, `init` | `brd-ingestion` |
+| (none) | `find` the BRD, confirm the folder once, `init` | `brd-ingestion` |
 | `BRD_PARSED` | decompose into atomic requirements, `req commit` | `atomic-requirements` |
 | `REQUIREMENTS_READY` / `GAP_ANALYSIS` | find gaps, cross-requirement pass, `gaps commit` | `gap-analysis` |
 | `WAITING_FOR_GAP_INPUT` | owner → one gap at a time → decisions | `gap-resolution` |
@@ -51,6 +52,7 @@ Tokens are a budget: each stage reads only what it needs and hands the rest to t
 6. **The original BRD is read-only.** Write only inside the confirmed project folder.
 7. **Honest status.** Deferred and carried-forward gaps stay OPEN, are linked from every story they affect, and those stories are flagged. Never present an assumption as a decision. Do not call the workflow complete while `complete` says otherwise.
 8. **Changes are explained before they are applied** (`changes check` → impact → the user's decision). Formatting-only changes need no review; approvals are never invalidated without a recorded reason; a manual edit is never discarded.
-9. **Every stage ends with a verified save.** The core writes artifacts into `md/` (readable) and `json/` (records) inside each artifact folder. After a stage-completing command read `files_saved` and tell the user the full folder path **before** asking them to review or approve. Never say "saved" without that receipt. (`references/save-checkpoint.md`)
+9. **Everything saves itself; say so once, with proof.** The core writes each artifact the moment it exists (requirements, gaps in `gaps/open`, answered gaps moved to `gaps/resolved`, stories in their status folder) and refreshes `START-HERE.md`. The user never has to ask for a save. After a stage-completing command read `files_saved` and give one line with the folder; never claim a save without that receipt. (`references/save-checkpoint.md`)
+10. **Don't slow the PM down.** Ask only for what the core needs and cannot find out: a decision, a name once, a folder once. No "shall I proceed?", no repeating a dialog's content in chat, no re-asking who is closing a gap when the decision owner answered it. Work that needs no human (reading the BRD, requirements, gap analysis, drafting stories) runs straight through.
 
 Open `references/human-approval.md` (identities, approvals), `references/artifact-integrity.md` (folder layout, write rules) or `references/ba-principles.md` only when the situation needs them; `references/choice-prompts.md` before building any dialog yourself.

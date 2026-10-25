@@ -201,7 +201,7 @@ class CarryForwardStateTests(Base):
         self.assertIn("still OPEN", out["note"])
         self.assertIn("GAP-002", p.state["pending_gap_ids"], "still outstanding")
         self.assertEqual(checks.status_report(p)["gaps"]["carried_forward"], ["GAP-002"])
-        self.assertIn("CARRIED FORWARD", (p.root / "gaps/md/GAP-002.md").read_text(encoding="utf-8"))
+        self.assertIn("CARRIED FORWARD", (p.root / "gaps/open/md/GAP-002.md").read_text(encoding="utf-8"))
         self.assertTrue(checks.validate_project(p)["ok"])
 
     def test_carried_gap_no_longer_blocks_but_an_uncarried_medium_gap_still_does(self):

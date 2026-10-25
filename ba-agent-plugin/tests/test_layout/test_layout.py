@@ -38,8 +38,8 @@ class StageSavesFilesTests(BATest):
         r = p.root
         self.assertEqual(len(names(r / "atomic-requirements/md")), 8)
         self.assertEqual(names(r / "atomic-requirements/md"), [n.replace(".json", ".md") for n in names(r / "atomic-requirements/json")])
-        self.assertIn("gap-register.json", names(r / "gaps/json"))
-        self.assertIn("GAP-001.md", names(r / "gaps/md"))
+        self.assertTrue((r / "state/gap-register.json").is_file())
+        self.assertEqual(names(r / "gaps/resolved/md"), [f"GAP-{n:03d}.md" for n in range(1, 4)])
         self.assertIn("decision-log.jsonl", names(r / "decisions/json"))
         self.assertIn("DEC-001.md", names(r / "decisions/md"))
         self.assertEqual(names(r / "baselines/md"), ["baseline-v1.md"])

@@ -8,7 +8,7 @@ import shutil
 import uuid
 from pathlib import Path
 
-from . import ingest, render, schema, snapshots
+from . import adr, ingest, render, schema, snapshots
 from .util import (BAError, append_jsonl, atomic_write_text, ist_now_iso, is_within, read_json, read_jsonl,
                    safe_join)
 
@@ -61,10 +61,18 @@ LEGACY_REQ_DIR = "requirements"
 
 # Every user-facing artifact folder keeps its readable copies in `md/` and its machine records in `json/`.
 STORY_BUCKETS = ("candidates", "approved", "unapproved", "deferred", "archive")
-SPLIT_DIRS = ("extracted", REQ_DIR, "gaps", "decisions", "baselines", "changes") + tuple(f"stories/{b}" for b in STORY_BUCKETS)
+# A gap lives in the folder that matches its status and moves when the status changes: open (asked, answered later,
+# reopened, carried forward), deferred, resolved. The register that holds them all is machine state, not a user folder.
+GAP_BUCKETS = ("open", "deferred", "resolved")
+GAP_REGISTER = "state/gap-register.json"
+SPLIT_DIRS = ("extracted", REQ_DIR, "decisions", "baselines", "changes") + tuple(f"gaps/{b}" for b in GAP_BUCKETS) +     tuple(f"stories/{b}" for b in STORY_BUCKETS)
 FORMAT_DIRS = {".md": "md", ".json": "json", ".jsonl": "json"}
 DIRS = ["state", "state/backups", "state/pending", "reports", "snapshots/brd", "snapshots/stories"] +        [f"{d}/{sub}" for d in SPLIT_DIRS for sub in ("md", "json")]
 UNRESOLVED_OK_STORY_BUCKETS = ("candidates", "approved", "unapproved", "deferred")
+
+
+def gap_bucket(g: dict) -> str:
+    return {"RESOLVED": "resolved", "DEFERRED": "deferred"}.get(g["status"], "open")
 
 
 def physical(rel: str) -> str:
@@ -172,6 +180,7 @@ class Project:
                 raise BAError("MIGRATION_FAILED", f"Could not rename {old} to {new}: {e}")
         self._migrate_split_layout()
         self._migrate_unapproved_stories()
+        self._migrate_gap_layout()
 
     def _migrate_split_layout(self) -> None:
         """Before 1.6.0 `.md` and `.json` files shared one folder. Move them into `md/` and `json/` (idempotent)."""
@@ -183,7 +192,7 @@ class Project:
                 (folder / sub).mkdir(exist_ok=True)
             for f in sorted(x for x in folder.iterdir() if x.is_file()):
                 sub = FORMAT_DIRS.get(f.suffix.lower())
-                if not sub:
+                if not sub or f.name == adr.LOG_NAME:
                     continue
                 dest = folder / sub / f.name
                 try:
@@ -195,6 +204,39 @@ class Project:
                         f.replace(dest)
                 except OSError as e:
                     raise BAError("MIGRATION_FAILED", f"Could not move {f} to {dest}: {e}")
+
+    def _migrate_gap_layout(self) -> None:
+        """Before 1.9.0 every gap sat in `gaps/md/` and the register in `gaps/json/`. Move the register to `state/`, file each gap
+        under open/deferred/resolved, then remove the old copies (only after the new ones are written)."""
+        gdir = self.root / "gaps"
+        new_reg = self.root / GAP_REGISTER
+        old_regs = [gdir / "json" / "gap-register.json", gdir / "gap-register.json"]
+        loose = list((gdir / "md").glob("GAP-*.md")) + list(gdir.glob("GAP-*.md"))
+        if not loose and not any(x.is_file() for x in old_regs):
+            return  # already in the 1.9.0 layout (or no gaps yet): opening a project must not rewrite anything
+        if not new_reg.exists():
+            old = next((x for x in old_regs if x.is_file()), None)
+            if old is None:
+                return
+            try:
+                new_reg.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(old, new_reg)
+            except OSError as e:
+                raise BAError("MIGRATION_FAILED", f"Could not move the gap register to state/: {e}")
+        for sub in ("open", "deferred", "resolved"):
+            for ext in ("md", "json"):
+                (gdir / sub / ext).mkdir(parents=True, exist_ok=True)
+        self.sync_gap_files()
+        for old in old_regs:
+            if old.is_file():
+                old.unlink()
+        for f in loose:
+            f.unlink()
+        for d in (gdir / "md", gdir / "json"):
+            try:
+                d.rmdir()  # only if empty: a loose file the user put there is never deleted
+            except OSError:
+                pass
 
     def _migrate_unapproved_stories(self) -> None:
         """Before 1.1.0 'not approved' stories stayed in stories/candidates/ with status CHANGES_REQUESTED."""
@@ -247,7 +289,7 @@ class Project:
             md = [x for x in (base / "md").glob("*") if x.is_file()]
             js = [x for x in (base / "json").glob("*") if x.is_file()]
             if md or js:
-                out[d] = {"md_folder": str(base / "md"), "md_files": len(md), "json_files": len(js)} if since is not None else                     {"md_folder": str(base / "md"), "md_files": len(md), "json_folder": str(base / "json"), "json_files": len(js)}
+                out[d] = {"folder": str(base), "md_folder": str(base / "md"), "md_files": len(md), "json_files": len(js)} if since is not None else                     {"md_folder": str(base / "md"), "md_files": len(md), "json_folder": str(base / "json"), "json_files": len(js)}
         reports = [x for x in (self.root / "reports").glob("*.md")]
         if reports and (since is None or now["reports"] != since.get("reports")):
             out["reports"] = {"folder": str(self.root / "reports"), "files": len(reports)}
@@ -400,12 +442,12 @@ class Project:
 
     # ------------------------------------------------------------------- gaps
     def _has_register(self) -> bool:
-        return self.exists("gaps/gap-register.json")
+        return self.exists(GAP_REGISTER)
 
     def gaps(self) -> list[dict]:
         if not self._has_register():
             return []
-        return self.read_json("gaps/gap-register.json")["gaps"]
+        return self.read_json(GAP_REGISTER)["gaps"]
 
     def gap(self, gid: str) -> dict:
         for g in self.gaps():
@@ -418,10 +460,36 @@ class Project:
             errs = schema.validate(g, "gap")
             if errs:
                 raise BAError("SCHEMA_INVALID", f"{g.get('gap_id')} failed gap validation", errors=errs)
-        self.write_json("gaps/gap-register.json", {"schema_version": "1.0", "updated_at": ist_now_iso(), "gaps": gaps})
+        self.write_json(GAP_REGISTER, {"schema_version": "1.0", "updated_at": ist_now_iso(), "gaps": gaps})
         for g in gaps:
             if touched is None or g["gap_id"] in touched:
-                self.write_text(f"gaps/{g['gap_id']}.md", render.gap_md(g))
+                self.store_gap_files(g)
+
+    def store_gap_files(self, g: dict) -> str:
+        """Write the gap's readable (`md/`) and record (`json/`) copies into the folder for its status and remove any copy left
+        in another folder, so a gap that is answered, deferred or reopened simply moves. Returns the folder it now lives in."""
+        bucket = gap_bucket(g)
+        gid = g["gap_id"]
+        self.write_json(f"gaps/{bucket}/{gid}.json", g)
+        self.write_text(f"gaps/{bucket}/{gid}.md", render.gap_md(g))
+        for other in GAP_BUCKETS:
+            if other != bucket:
+                for ext in ("md", "json"):
+                    f = self.path(f"gaps/{other}/{gid}.{ext}")
+                    if f.exists():
+                        f.unlink()
+        return f"gaps/{bucket}"
+
+    def sync_gap_files(self) -> int:
+        """Make the folders agree with the register (which is the record): used after a migration and by `recover`."""
+        gaps = self.gaps()
+        for g in gaps:
+            self.store_gap_files(g)
+        return len(gaps)
+
+    def gap_location(self, gid: str) -> dict:
+        b = gap_bucket(self.gap(gid))
+        return {"folder": f"gaps/{b}", "file": str(self.root / "gaps" / b / "md" / f"{gid}.md")}
 
     # -------------------------------------------------------------- decisions
     def decisions(self) -> dict[str, dict]:

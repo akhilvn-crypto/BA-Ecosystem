@@ -13,7 +13,7 @@ import sys
 import traceback
 from pathlib import Path
 
-from . import baseline as basemod, changes as changemod, checks, gaps as gapmod, ingest, reqs as reqmod, snapshots, stories as storymod
+from . import adr, discover, overview, baseline as basemod, changes as changemod, checks, gaps as gapmod, ingest, reqs as reqmod, snapshots, stories as storymod
 from .project import Project
 from .util import BAError, human_ist, sha256_file
 
@@ -95,6 +95,7 @@ def build_parser() -> argparse.ArgumentParser:
     t = sub.add_parser("trace"); t.add_argument("--write", action="store_true")
     sub.add_parser("recover")
     sub.add_parser("files")
+    fd = sub.add_parser("find"); fd.add_argument("--dir", help="folder to look in (default: --root, else the current folder)")
     sub.add_parser("complete")
     sub.add_parser("report")
     f = sub.add_parser("fingerprint"); f.add_argument("file")
@@ -179,6 +180,9 @@ READ_ONLY = {"show", "list", "pairs", "outline", "history", "triage", "next", "g
 
 def run(a) -> dict | str:
     p, out = _run(a)
+    if p is not None and a.group not in ("status", "validate", "trace", "files") and getattr(a, "action", None) not in READ_ONLY:
+        adr.refresh(p)  # ADR-LOG.md at the top of every artifact folder: who decided / approved what, when (IST)
+        overview.refresh(p)  # START-HERE.md: where everything is and where the project stands
     if p is not None and a.group not in ("status", "validate", "trace"):
         done = changemod.reconcile(p)  # close change items whose underlying work is now complete
         if done and isinstance(out, dict):
@@ -187,6 +191,9 @@ def run(a) -> dict | str:
         saved = p.receipt(since=getattr(a, "_before", None))  # proof of what this command wrote and where to open it
         if saved:
             out["files_saved"] = saved
+        gid = getattr(a, "id", None) if a.group == "gap" else None
+        if gid and p._has_register() and any(g["gap_id"] == gid for g in p.gaps()):
+            out["gap_file"] = p.gap_location(gid)  # where the gap lives now: it moves between open/deferred/resolved
     return out
 
 
@@ -197,10 +204,14 @@ def _run(a):
         if not fp.is_file():
             raise BAError("SOURCE_NOT_FOUND", f"{fp} not found")
         return None, {"file": str(fp.resolve()), "fingerprint": sha256_file(fp)}
+    if g == "find":
+        return None, discover.find(a.dir or a.root)
     if g == "init":
         if not a.root:
             raise BAError("NO_PROJECT", "init requires --root <project folder> explicitly confirmed by the user.")
         p = Project.create(a.root, a.brd, a.name, a.copy_source)
+        adr.refresh(p)
+        overview.refresh(p)
         meta = p.source_metadata()
         return None, {"project_root": str(p.root), "project_id": p.state["project_id"], "stage": p.state["stage"],
                 "source": {"format": meta["format"], "fingerprint": meta["fingerprint"], "sections": len(meta["sections"]),

@@ -17,11 +17,15 @@ W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 
 SUPPORTED = {".md": "markdown", ".markdown": "markdown", ".txt": "text", ".docx": "docx"}
 UNSUPPORTED_HINT = {
-    ".pdf": "PDF text extraction needs a library that is not available without installing packages. "
-            "Please export the BRD to .docx, .md or .txt (or approve installing a PDF library).",
-    ".doc": "Legacy .doc is not supported. Please save as .docx, .md or .txt.",
-    ".rtf": "RTF is not supported. Please save as .docx, .md or .txt.",
-    ".xlsx": "Spreadsheets are not supported as a BRD source. Export the relevant sheet to .md or .txt.",
+    ".pdf": "The core reads .md, .txt and .docx only. Do not ask the user to convert it: read the PDF yourself with your own file "
+            "tools, write its text faithfully (headings, lists, tables, nothing added or dropped) to <project folder>/source/<same name>.md, "
+            "tell the user in one line, and run `init` on that .md. The original PDF is left untouched.",
+    ".doc": "The core reads .md, .txt and .docx only. Read the file yourself, save its text faithfully as <project folder>/source/<same name>.md "
+            "and run `init` on that, telling the user in one line.",
+    ".rtf": "The core reads .md, .txt and .docx only. Read the file yourself, save its text faithfully as <project folder>/source/<same name>.md "
+            "and run `init` on that, telling the user in one line.",
+    ".xlsx": "Spreadsheets are not read by the core. Read the relevant sheet(s) yourself, save them faithfully as Markdown tables in "
+             "<project folder>/source/<same name>.md and run `init` on that, telling the user in one line.",
 }
 
 # Heuristic only: surfaces text that tries to instruct the assistant. It is advisory; the real

@@ -11,12 +11,16 @@ from pathlib import Path
 PLUGIN = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLUGIN / "scripts"))
 
-from ba_lib import baseline as basemod, checks, gaps as gapmod, ingest, project as projmod, reqs, stories, util  # noqa: E402
+from ba_lib import adr, baseline as basemod, checks, gaps as gapmod, ingest, project as projmod, reqs, stories, util  # noqa: E402
 from ba_lib.project import Project  # noqa: E402
 
 FIXTURE = PLUGIN / "tests" / "fixtures" / "brd_library.md"
 # 2026-10-22 13:15:00 UTC == 2026-10-22 18:45:00 IST (+05:30)
 CLOCK_START = datetime(2026, 10, 22, 13, 15, 0, tzinfo=timezone.utc)
+
+
+def adr_refresh(p) -> None:
+    adr.refresh(p)
 
 
 def option_labels(packet: dict) -> list[str]:
@@ -173,3 +177,17 @@ def flatten_to_legacy(root: Path) -> None:
                 f.replace(base / f.name)
             if (base / sub).is_dir():
                 (base / sub).rmdir()
+
+
+def to_legacy_gap_layout(root: Path) -> None:
+    """Turn a project gaps into the pre-1.9.0 layout: every GAP-nnn.md in gaps/md/, the register in gaps/json/."""
+    root = Path(root)
+    (root / "gaps" / "md").mkdir(parents=True, exist_ok=True)
+    (root / "gaps" / "json").mkdir(parents=True, exist_ok=True)
+    (root / "state" / "gap-register.json").replace(root / "gaps" / "json" / "gap-register.json")
+    for b in projmod.GAP_BUCKETS:
+        base = root / "gaps" / b
+        for f in list((base / "md").glob("GAP-*.md")):
+            f.replace(root / "gaps" / "md" / f.name)
+        for f in list((base / "json").glob("GAP-*.json")):
+            f.unlink()

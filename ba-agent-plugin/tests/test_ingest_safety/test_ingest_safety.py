@@ -58,7 +58,7 @@ class FormatTests(BATest):
         with self.assertRaises(BAError) as c:
             Project.create(self.tmp / "out", pdf)
         self.assertEqual(c.exception.code, "UNSUPPORTED_FORMAT")
-        self.assertIn("export", c.exception.message.lower())
+        self.assertIn("read the pdf yourself", c.exception.message.lower())
         self.assertFalse((self.tmp / "out").exists(), "nothing is created for an unsupported source")
 
     def test_corrupt_docx_and_missing_and_empty_sources(self):

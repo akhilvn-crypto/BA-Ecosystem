@@ -511,8 +511,8 @@ def record_conflict(p, gap_id: str, answer_id: str, with_ids: list[str], descrip
 
 # --------------------------------------------------------- closure (WAL)
 
-def resolve(p, gap_id: str, answer_id: str, interpretation: str, closed_by_name: str, closed_by_role: str,
-            closure_summary: str, confirmation: str, conflict_status: str = "PASSED", conflicting_ids: list[str] | None = None,
+def resolve(p, gap_id: str, answer_id: str, interpretation: str, closed_by_name: str | None = None, closed_by_role: str | None = None,
+            closure_summary: str | None = None, confirmation: str | None = None, conflict_status: str = "PASSED", conflicting_ids: list[str] | None = None,
             reviewed_ids: list[str] | None = None, change_by_name: str | None = None, change_by_role: str | None = None,
             change_statement: str | None = None, requirement_updates: dict | None = None,
             owner_confirmation: str | None = None) -> dict:
@@ -528,10 +528,20 @@ def resolve(p, gap_id: str, answer_id: str, interpretation: str, closed_by_name:
         raise BAError("NOT_PRESENTED", f"{gap_id} is {g['status']}; only a presented (WAITING_FOR_ANSWER) gap can be resolved.")
     owner = require_owner(p, g)
     owner_name, owner_role = require_identity(owner["name"], owner["role"], "Decision owner")
-    closer_name, closer_role = require_identity(closed_by_name, closed_by_role, "Gap closer")
     a = _find_answer(g, answer_id)
     if a.get("assessment") == "INCOMPLETE":
         raise BAError("ANSWER_INCOMPLETE", "That answer was marked incomplete; record the follow-up answer first.")
+    # No separate closing ceremony: the decision owner's own answer, once checked, closes the gap. A closer is named only when
+    # someone other than the owner is closing it, or when the answer came from another respondent the owner has not confirmed.
+    closer_basis = "NAMED_CLOSER"
+    if not (normalize_ws(closed_by_name or "") or normalize_ws(closed_by_role or "")):
+        if a.get("respondent_name") and not same_person(a["respondent_name"], owner_name):
+            raise BAError("IDENTITY_REQUIRED", f"{a['respondent_name']} answered {gap_id}, not the decision owner. Ask the owner "
+                          f"({owner_name}, {owner_role}) to confirm, then pass their words as --confirmation with --closed-by-name/--closed-by-role.")
+        closed_by_name, closed_by_role, closer_basis = owner_name, owner_role, "DECISION_OWNER_ANSWER"
+        confirmation = confirmation or a["response"]
+        closure_summary = closure_summary or interpretation
+    closer_name, closer_role = require_identity(closed_by_name, closed_by_role, "Gap closer")
     for label, val in (("interpretation", interpretation), ("closure_summary", closure_summary),
                        ("confirmation (the closer's own words confirming closure)", confirmation)):
         if not normalize_ws(val or ""):
@@ -634,7 +644,7 @@ def resolve(p, gap_id: str, answer_id: str, interpretation: str, closed_by_name:
         "response_received_at_ist": a["received_at_ist"], "closed_at_ist": now,
         "closure_summary": normalize_ws(closure_summary), "closure_validation": validation,
         "conflict_check": {"status": conflict_status, "conflicting_artifact_ids": conflicting_ids},
-        "closer_confirmation": confirmation.strip(), "owner_confirmation": owner_stmt if material else None,
+        "closer_confirmation": confirmation.strip(), "closer_basis": closer_basis, "owner_confirmation": owner_stmt if material else None,
         "reopened_gap_ids": sorted(set(reopen)), "superseded_decision_ids": supersede,
     }
     after = copy.deepcopy(g)

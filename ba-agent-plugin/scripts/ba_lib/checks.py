@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from . import changes as changemod, gaps as gapmod, schema, snapshots, stories as storymod, storytrack
-from .project import REQ_DIR
+from .project import GAP_BUCKETS, REQ_DIR, gap_bucket
 from .util import BAError, append_jsonl, human_ist, is_ist_iso, ist_now_iso, read_jsonl, normalize_ws
 
 REQ_ACTIVE = ("ACTIVE", "NEEDS_REVIEW")
@@ -40,6 +40,12 @@ def validate_project(p) -> dict:
     gids = [g["gap_id"] for g in gaps]
     if len(gids) != len(set(gids)):
         E.append("duplicate gap IDs in gap-register.json")
+    for g in gaps:
+        b = gap_bucket(g)
+        if not p.exists(f"gaps/{b}/{g['gap_id']}.md"):
+            W.append(f"{g['gap_id']}: readable copy missing from gaps/{b}/md (run `recover` to rebuild it)")
+        elif any(p.exists(f"gaps/{o}/{g['gap_id']}.md") for o in GAP_BUCKETS if o != b):
+            W.append(f"{g['gap_id']}: also found in another gaps/ folder; it belongs in gaps/{b} (run `recover`)")
     recs, jerr = read_jsonl(p.path("decisions/decision-log.jsonl"))
     E += jerr
     decs = p.decisions()
@@ -292,6 +298,8 @@ def traceability(p, write: bool = False) -> dict:
 def recover(p) -> dict:
     actions = gapmod.recover_journals(p)
     out = {"closures_rolled_forward": actions, "approvals_repaired": [], "gaps_reopened": [], "audit_backfilled": []}
+    if p._has_register():
+        out["gap_files_rebuilt"] = p.sync_gap_files()
     events = p.audit_events()
     for sid_path in p.files("stories/approved", "US-*.json"):
         a = json.loads(sid_path.read_text(encoding="utf-8"))

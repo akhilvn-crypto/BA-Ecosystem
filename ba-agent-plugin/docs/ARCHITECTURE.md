@@ -15,7 +15,7 @@ Standard library only (Python ≥ 3.9; tested on 3.14): no installs, no network,
 
 ## Modules (`scripts/ba_lib/`)
 
-`util` (IST clock, hashing, atomic writes, path containment, identity checks) · `schema` (JSON-Schema subset validator for `schemas/*.json`) · `ingest` (md/txt/docx → text, section outline, hashes, instruction-like-line scan) · `project` (store, state machines, audit, ID allocation, impact flagging) · `reqs` (requirements, versioning, source-change impact) · `gaps` (owner, gap lifecycle, answers, conflict gate, journaled closure) · `baseline` · `stories` · `checks` (validate, trace, recover, status, completion) · `conflicts` (advisory heuristics) · `render` (+ `templates/`) · `cli`.
+`util` (IST clock, hashing, atomic writes, path containment, identity checks) · `schema` (JSON-Schema subset validator for `schemas/*.json`) · `ingest` (md/txt/docx → text, section outline, hashes, instruction-like-line scan) · `project` (store, state machines, audit, ID allocation, impact flagging) · `reqs` (requirements, versioning, source-change impact) · `gaps` (owner, gap lifecycle, answers, conflict gate, journaled closure) · `baseline` · `stories` · `checks` (validate, trace, recover, status, completion) · `conflicts` (advisory heuristics) · `render` (+ `templates/`) · `adr` (ADR-LOG.md views) · `overview` (START-HERE.md) · `discover` (`find`) · `cli`.
 
 ## State machines
 

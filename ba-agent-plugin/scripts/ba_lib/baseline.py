@@ -99,7 +99,12 @@ def create(p, summary: str | None = None) -> dict:
             "next": "Show the baseline to the user and ask for explicit confirmation (`baseline confirm`)."}
 
 
-def confirm(p, version: int, by_name: str, by_role: str, statement: str) -> dict:
+def confirm(p, version: int, by_name: str | None = None, by_role: str | None = None, statement: str | None = None) -> dict:
+    basis = "NAMED_APPROVER"
+    if not (normalize_ws(by_name or "") or normalize_ws(by_role or "")):
+        owner = p.state.get("decision_owner")  # the person already named for this project approves unless someone else is named
+        if owner:
+            by_name, by_role, basis = owner["name"], owner["role"], "DECISION_OWNER"
     by_name, by_role = require_identity(by_name, by_role, "Baseline approver")
     if not normalize_ws(statement):
         raise BAError("MISSING_METADATA", "The approver's verbatim confirmation is required.")
@@ -121,7 +126,7 @@ def confirm(p, version: int, by_name: str, by_role: str, statement: str) -> dict
     p.write_json(f"baselines/baseline-v{version}.json", doc)
     p.write_text(f"baselines/baseline-v{version}.md", _markdown(doc), backup=False)
     p.state["baseline_version"] = version
-    p.audit("BASELINE_APPROVED", version=version, by_name=by_name, by_role=by_role, statement=statement)
+    p.audit("BASELINE_APPROVED", version=version, by_name=by_name, by_role=by_role, statement=statement, approver_basis=basis)
     p.save_state(f"baseline-v{version}-approved")
     # re-validate existing stories against the new baseline
     cur = {e["requirement_id"]: e for e in doc["requirements"]}

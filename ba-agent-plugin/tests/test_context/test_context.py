@@ -231,7 +231,7 @@ class CompactOutputTests(BATest):
     def test_receipt_lists_only_the_folders_the_command_changed(self):
         p = self.with_gaps()
         raw, js = ba(p.root, "owner", "set", "--name", "Priya Nair", "--role", "Product Owner")
-        self.assertEqual(set(js["files_saved"]), {"gaps"}, "only the gap files were rewritten (owner recorded on them)")
+        self.assertEqual(set(js["files_saved"]), {"gaps/open"}, "only the gap files were rewritten (owner recorded on them)")
         raw, js = ba(p.root, "gaps", "list")
         self.assertNotIn("files_saved", js, "read-only commands report nothing")
         ba(p.root, "gaps", "next", "--id", "GAP-003")
@@ -240,13 +240,13 @@ class CompactOutputTests(BATest):
                      "--closed-by-name", "Priya Nair", "--closed-by-role", "Product Owner", "--closure-summary", "Clear answer.",
                      "--confirmation", "Yes, resolved.", "--reviewed", "REQ-003")
         self.assertTrue(js["ok"], js)
-        self.assertEqual(set(js["files_saved"]), {"gaps", "decisions", "atomic-requirements"}, "only what this command wrote (the requirement now links its decision)")
+        self.assertEqual(set(js["files_saved"]), {"gaps/open", "gaps/resolved", "decisions", "atomic-requirements"}, "only what this command wrote (the gap moved from open to resolved; the requirement now links its decision)")
         self.assertNotIn("extracted", js["files_saved"])
-        self.assertNotIn("json_folder", js["files_saved"]["gaps"])
+        self.assertNotIn("json_folder", js["files_saved"]["gaps/resolved"])
         self.assertTrue(js["files_saved"]["decisions"]["md_folder"].endswith("md"))
         full = Project.open(p.root).receipt()
         self.assertIn("atomic-requirements", full)
-        self.assertIn("json_folder", full["gaps"], "`files` still returns the complete receipt")
+        self.assertIn("json_folder", full["gaps/resolved"], "`files` still returns the complete receipt")
 
 
 class BrdBatchingTests(BATest):

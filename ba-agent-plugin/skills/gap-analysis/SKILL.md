@@ -21,4 +21,6 @@ Do **not** present gaps to the user here, and never before the decision owner is
 
 For more than about ten requirements, give batches of requirement IDs to `ba-agent:gap-analyst` helpers (in parallel) instead of analysing them here: each writes JSON under `state/inbox/` and returns at most 8 lines; you run `gaps add`.
 
+**Saved as found:** `gaps add` files every gap in `gaps/open/` immediately (readable copy in `md/`). After `gaps commit` tell the user in one line how many gaps were found, by priority, and that they are in `gaps/open/`; then move straight to `gap-resolution` (which asks for the decision owner). Gaps move to `gaps/resolved/` by themselves when answered.
+
 Re-analysis after requirement changes: only the changed or flagged requirements, then `gaps commit` again.
