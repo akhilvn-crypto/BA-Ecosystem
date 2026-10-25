@@ -37,7 +37,7 @@ Python 3.9+ on the machine that runs the plugin (standard library only — **not
 ## Develop / test
 
 ```
-python -m unittest discover -s tests -t . -v      # run from this folder; 300 tests
+python -m unittest discover -s tests -t . -v      # run from this folder; 326 tests
 claude plugin validate .                            # manifest, skills, agents, commands
 ```
 

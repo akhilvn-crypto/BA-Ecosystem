@@ -26,6 +26,23 @@ class NoBytecodeTests(BATest):
         self.assertEqual(list(copy.rglob("__pycache__")), [], "the plugin folder must stay untouched")
         self.assertTrue((out / "state" / "workflow.json").exists(), "the core works with --root outside the plugin folder")
 
+    def test_the_helper_scripts_leave_no_pycache_behind_either(self):
+        copy = self.tmp / "plugin-copy"
+        shutil.copytree(PLUGIN, copy, ignore=shutil.ignore_patterns("__pycache__", "tests", ".git"))
+        out, brd = self.tmp / "project", self.brd_copy()
+        scripts = copy / "scripts"
+
+        def run(*argv, **kw):
+            r = subprocess.run([sys.executable, *map(str, argv)], capture_output=True, text=True, encoding="utf-8", **kw)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+        run(scripts / "ba.py", "--root", out, "init", "--brd", brd)
+        run(scripts / "safe_write.py", "--root", out, "--path", "state/inbox/x.json", "--stdin", input="[]")
+        run(scripts / "validate_artifacts.py", "--root", out)
+        run(scripts / "check_traceability.py", "--root", out)
+        run(scripts / "fingerprint_source.py", brd)
+        self.assertEqual(list(copy.rglob("__pycache__")), [], "no helper script may write bytecode into the plugin folder")
+
 
 class GeneratedHelpTests(BATest):
     def runTest(self):

@@ -70,13 +70,21 @@ def _office(src: Path) -> tuple[str, str, list[str]]:
     if not exe:
         raise BAError("CONVERTER_UNAVAILABLE", f"No {src.suffix} converter was usable here (looked for LibreOffice `soffice`). "
                       "Read the file yourself with your own file tools and write its text faithfully to source/<same name>.md.")
-    with tempfile.TemporaryDirectory() as tmp:
-        r = _run([exe, "--headless", "--convert-to", "docx", "--outdir", tmp, str(src)])
+    failed = BAError("CONVERTER_UNAVAILABLE", f"LibreOffice could not convert {src.name}. Read the file yourself and write "
+                     "its text faithfully to source/<same name>.md.")
+    with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as profile:
+        # A private profile, so a LibreOffice window the user already has open cannot block the headless run.
+        cmd = [exe, f"-env:UserInstallation={Path(profile).as_uri()}", "--headless", "--convert-to", "docx", "--outdir", tmp, str(src)]
+        try:
+            r = _run(cmd)
+        except (subprocess.TimeoutExpired, OSError):
+            raise failed
         out = Path(tmp) / (src.stem + ".docx")
         if r.returncode != 0 or not out.exists():
-            raise BAError("CONVERTER_UNAVAILABLE", f"LibreOffice could not convert {src.name}. Read the file yourself and write "
-                          "its text faithfully to source/<same name>.md.")
+            raise failed
         text, warnings = ingest._docx_text(out)
+    if not re.search(r"(?m)^#{1,6} ", text):  # an old .doc / .rtf often has numbered lines but no heading styles
+        text = _promote_headings(text)
     return "soffice+docx", text, warnings
 
 
@@ -138,7 +146,7 @@ def convert(root: str | None, src: str, out: str | None = None) -> dict:
     """Write `<root>/source/<name>.md` (or `out`, which must stay inside `<root>/source/`) and report how."""
     if not root:
         raise BAError("NO_PROJECT", "convert needs --root <output folder> (the folder the user confirmed for outputs).")
-    inp, base = Path(src), Path(root).resolve()
+    inp, base = Path(src), Path(root).resolve()  # converters get an absolute path below, so a name starting with `-` is not an option
     if not inp.is_file():
         raise BAError("SOURCE_NOT_FOUND", f"{inp} not found")
     ext = inp.suffix.lower()
@@ -148,7 +156,12 @@ def convert(root: str | None, src: str, out: str | None = None) -> dict:
     dest = (Path(out) if out and Path(out).is_absolute() else base / (out or f"source/{inp.stem}.md")).resolve()
     if base / "source" not in dest.parents or dest.suffix.lower() != ".md":
         raise BAError("BAD_INPUT", "--out must be a .md file inside <root>/source/.")
-    method, text, warnings = {".pdf": _pdf, ".xlsx": _xlsx}.get(ext, _office)(inp)
+    inp = inp.resolve()
+    try:
+        method, text, warnings = {".pdf": _pdf, ".xlsx": _xlsx}.get(ext, _office)(inp)
+    except subprocess.TimeoutExpired:
+        raise BAError("CONVERTER_UNAVAILABLE", f"The converter for {ext} did not finish in time. Read the file yourself with your own "
+                      "file tools and write its text faithfully to source/<same name>.md.")
     text = ingest.normalize_text(text)
     if len(text.strip()) < 20:
         raise BAError("EMPTY_SOURCE", "The converted document has (almost) no text; it may be a scan. Read it yourself and "

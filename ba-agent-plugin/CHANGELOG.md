@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased (fixes from `ba-agent-1.10.0-audit.md`)
+- **D1 backups no longer synced.** `state/backups/` and `state/inbox/` are local only: never in `changed_files`, `removed_files` or the manifest.
+- **D2 DOC/RTF headings.** `convert` runs numbered lines through the heading rule when LibreOffice's output has no heading styles.
+- **D3 no bytecode from helper scripts.** `safe_write.py`, `validate_artifacts.py`, `check_traceability.py` and `fingerprint_source.py` set `sys.dont_write_bytecode` before importing `ba_lib` (a package `__init__` is compiled before its own body runs, so the flag must be set by the script).
+- **D4** README test count.
+- **D5 lean staging.** `manifest --stage-list` returns the files a session needs (`state/` without backups and inbox, `snapshots/`, `source/`, `extracted/`, every `json/` folder, `stories/approved/md/`). `manifest` now hashes exactly that set, so a lean copy is in sync; `md/` views, `reports/`, `START-HERE.md` and `ADR-LOG.md` are rebuilt. The core now creates `state/backups/` when it is missing (a lean copy has none; before, the first overwrite failed with `WRITE_FAILED`). `manifest` and `bridge` no longer refresh `START-HERE.md` / `ADR-LOG.md`.
+- **D6 `bridge on|off`.** Records in `state/bridge.json` that every command reports `changed_files` / `removed_files`, so `--changed-files` is not repeated. `cowork-sync.md` updated.
+- **D7 `soffice` robustness.** Private LibreOffice profile (`-env:UserInstallation`), timeouts give `CONVERTER_UNAVAILABLE`, converters get an absolute input path.
+- **D8 smaller router.** `ba-workflow/SKILL.md` 7,044 -> 4,979 bytes and `gap-resolution.md` 4,279 -> about 4,000; gap session 11,323 -> about 8,900 bytes, story session 11,196 -> about 9,100 (see `docs/TEST_REPORT.md`). The rules are unchanged; wording is tighter. Budgets in `test_context` lowered to match.
+
 ## 1.10.0
 Cowork compatibility and token efficiency, from `ba-agent-cowork-review.md`.
 - **Cowork sync protocol (C1).** New `references/cowork-sync.md`, loaded only when file-bridge tools are present: stage the project in at session start, commit back what each stage changed, send `START-HERE.md` at the end, name a path only after it is committed. Core support: the global `--changed-files` flag (or `BA_CHANGED_FILES=1`) adds `changed_files` and `removed_files` to any command (a before/after comparison of the project tree, so every writer is covered, including a gap moving from `gaps/open` to `gaps/resolved`); `manifest [--write] [--full]` compares the tree with `state/manifest.json`, the state committed at the end of the last stage, and reports `drift` (`edited`, `added`, `missing`). `files_saved` is unchanged. The flag is opt-in so Claude Code users do not pay for paths they do not need.

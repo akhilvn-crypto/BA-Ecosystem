@@ -75,7 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="ba.py", description="Interactive BA plugin — deterministic workflow core")
     ap.add_argument("--root", help="project folder (or env BA_PROJECT_ROOT, or cwd if it is a project)")
     ap.add_argument("--args-file", help="JSON file supplying option values (avoids shell quoting)")
-    ap.add_argument("--changed-files", action="store_true", help="report changed_files / removed_files: every project file this command wrote, moved or removed (env BA_CHANGED_FILES=1)")
+    ap.add_argument("--changed-files", action="store_true", help="report changed_files / removed_files: every project file this command wrote, moved or removed (env BA_CHANGED_FILES=1, or `bridge on` once per project)")
     ap.add_argument("--pretty", action="store_true", help="indent the JSON output (default is compact: it costs fewer tokens)")
     sub = ap.add_subparsers(dest="group", required=True)
 
@@ -94,6 +94,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("status").add_argument("--json", action="store_true")
     sub.add_parser("validate")
     mf = sub.add_parser("manifest"); mf.add_argument("--write", action="store_true"); mf.add_argument("--full", action="store_true")
+    mf.add_argument("--stage-list", action="store_true", help="list the files to stage into a cloud workspace instead of comparing")
+    br = sub.add_parser("bridge"); br.add_argument("mode", nargs="?", choices=("on", "off"))
     t = sub.add_parser("trace"); t.add_argument("--write", action="store_true")
     sub.add_parser("recover")
     sub.add_parser("files")
@@ -189,8 +191,9 @@ READ_ONLY = {"show", "list", "pairs", "outline", "history", "triage", "next", "g
 
 
 def run(a) -> dict | str:
-    want = (a.changed_files or os.environ.get("BA_CHANGED_FILES", "").lower() in TRUE) and a.group not in ("help", "find", "fingerprint")
-    root = _root(a) if want else None
+    root = _root(a)
+    want = (a.changed_files or os.environ.get("BA_CHANGED_FILES", "").lower() in TRUE or sync.bridge_on(root) or a.group == "bridge") and a.group not in ("help", "find", "fingerprint")
+    root = root if want else None
     before = sync.sig(root) if root else None
     p, out = _run(a)
     out = _finish(a, p, out)
@@ -200,7 +203,7 @@ def run(a) -> dict | str:
 
 
 def _finish(a, p, out) -> dict | str:
-    if p is not None and a.group not in ("status", "validate", "trace", "files") and getattr(a, "action", None) not in READ_ONLY:
+    if p is not None and a.group not in ("status", "validate", "trace", "files", "manifest", "bridge") and getattr(a, "action", None) not in READ_ONLY:
         adr.refresh(p)  # ADR-LOG.md at the top of every artifact folder: who decided / approved what, when (IST)
         overview.refresh(p)  # START-HERE.md: where everything is and where the project stands
     if p is not None and a.group not in ("status", "validate", "trace"):
@@ -268,7 +271,9 @@ def _dispatch(a, p, g, act):
     if g == "validate":
         return checks.validate_project(p)
     if g == "manifest":
-        return sync.manifest(p.root, a.write, a.full)
+        return sync.manifest(p.root, a.write, a.full, a.stage_list)
+    if g == "bridge":
+        return sync.bridge(p.root, a.mode)
     if g == "trace":
         return checks.traceability(p, a.write)
     if g == "recover":

@@ -301,7 +301,7 @@ class PromptBudgetTests(Flow):
             text = f.read_text(encoding="utf-8")
             desc = re.search(r"^description: (.*)$", text, re.M).group(1)
             self.assertLessEqual(len(desc), 260, f"{f.parent.name}: description is loaded for every session")
-            self.assertLessEqual(len(text), 7000, f"{f.parent.name}: move detail into references/")
+            self.assertLessEqual(len(text), 5000, f"{f.parent.name}: move detail into references/")
 
     def test_frontmatter_stays_valid_yaml(self):
         """An unquoted `: ` in a description breaks YAML parsing and the host silently drops the skill's or agent's metadata."""
@@ -318,13 +318,13 @@ class PromptBudgetTests(Flow):
 
     def test_a_gap_session_loads_little_up_front(self):
         up_front = len((STAGES.parent.parent / "SKILL.md").read_text(encoding="utf-8")) + len((STAGES / "gap-resolution.md").read_text(encoding="utf-8"))
-        self.assertLessEqual(up_front, 11200, "router + gap loop (was ~28 KB before the split)")
+        self.assertLessEqual(up_front, 9000, "router + gap loop (was ~28 KB before the split, 11.3 KB in 1.10.0)")
         for ref in (STAGES / "gap-resolution").glob("*.md"):
             self.assertLessEqual(len(ref.read_text(encoding="utf-8")), 4800, ref.name)
 
     def test_a_story_session_loads_little_up_front(self):
         up_front = len((STAGES.parent.parent / "SKILL.md").read_text(encoding="utf-8")) + len((STAGES / "story-review.md").read_text(encoding="utf-8"))
-        self.assertLessEqual(up_front, 11100)
+        self.assertLessEqual(up_front, 9200)
 
     def test_only_the_router_is_a_listed_skill_and_stage_files_carry_no_frontmatter(self):
         """T5: ten stage skills used to be advertised in every session; now one skill lists, and stage files load on demand."""

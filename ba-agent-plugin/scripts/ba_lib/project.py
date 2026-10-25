@@ -308,6 +308,7 @@ class Project:
         try:
             if backup and target.exists() and target.read_text(encoding="utf-8") != text:
                 b = self.path("state/backups/" + rel.replace("/", "__") + ".bak")
+                b.parent.mkdir(parents=True, exist_ok=True)  # a lean staged copy (cowork) does not carry state/backups/
                 shutil.copyfile(target, b)
             atomic_write_text(target, text)
         except OSError as e:

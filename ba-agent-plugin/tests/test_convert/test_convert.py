@@ -3,8 +3,10 @@ import contextlib
 import io
 import json
 import shutil
+import subprocess
 import sys
 import zipfile
+from pathlib import Path
 from unittest import mock
 
 from tests.helpers import BATest
@@ -68,6 +70,48 @@ class ConvertTests(BATest):
         self.assertIn("# 1 Borrowing", text)
         self.assertIn("up to five books", text)
         self.assertGreaterEqual(out["headings"], 2)
+
+    def fake_soffice(self, paragraphs, seen=None):
+        """Stand-in for LibreOffice: writes a DOCX of plain paragraphs (no heading styles) where `--convert-to` points."""
+        w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        body = "".join(f'<w:p><w:r><w:t>{t}</w:t></w:r></w:p>' for t in paragraphs)
+
+        def run(cmd, timeout=180):
+            if seen is not None:
+                seen.append(cmd)
+            outdir = cmd[cmd.index("--outdir") + 1]
+            with zipfile.ZipFile(f"{outdir}/{Path(cmd[-1]).stem}.docx", "w") as z:
+                z.writestr("word/document.xml", f'<w:document xmlns:w="{w}"><w:body>{body}</w:body></w:document>')
+            return subprocess.CompletedProcess(cmd, 0, b"", b"")
+        return run
+
+    def test_rtf_numbered_lines_become_headings_and_soffice_gets_a_private_profile(self):
+        f = self.tmp / "brd.rtf"
+        f.write_text("{\rtf1 x}")
+        seen = []
+        paras = ["1 Borrowing", "A member shall borrow up to five books at a time", "2.1 Borrowing limits", "Five books at most"]
+        with mock.patch.object(convmod.shutil, "which", return_value="soffice"), mock.patch.object(convmod, "_run", self.fake_soffice(paras, seen)):
+            out = convmod.convert(str(self.tmp / "out"), str(f))
+        self.assertGreaterEqual(out["headings"], 2)
+        text = (self.tmp / "out" / "source" / "brd.md").read_text(encoding="utf-8")
+        self.assertIn("## 2.1 Borrowing limits", text)
+        self.assertTrue(any(a.startswith("-env:UserInstallation=file:") for a in seen[0]), seen[0])
+        self.assertEqual(seen[0][-1], str(f.resolve()), "converters get an absolute path")
+
+    def test_a_hung_converter_gives_the_converter_unavailable_fallback(self):
+        f = self.tmp / "brd.rtf"
+        f.write_text("{\rtf1 x}")
+        hung = mock.Mock(side_effect=subprocess.TimeoutExpired("soffice", 180))
+        with mock.patch.object(convmod.shutil, "which", return_value="soffice"), mock.patch.object(convmod, "_run", hung):
+            with self.assertRaises(convmod.BAError) as cm:
+                convmod.convert(str(self.tmp / "out"), str(f))
+        self.assertEqual(cm.exception.code, "CONVERTER_UNAVAILABLE")
+        pdf = self.tmp / "x.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+        with mock.patch.object(convmod.shutil, "which", return_value="pdftotext"), mock.patch.object(convmod, "_run", hung):
+            with self.assertRaises(convmod.BAError) as cm:
+                convmod.convert(str(self.tmp / "out"), str(pdf))
+        self.assertEqual(cm.exception.code, "CONVERTER_UNAVAILABLE")
 
     def test_no_converter_is_reported_so_the_model_can_fall_back(self):
         f = self.tmp / "x.pdf"

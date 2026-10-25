@@ -19,19 +19,33 @@ MANAGED = ("state", "reports", "snapshots", "source", "extracted", "atomic-requi
 TOP_FILES = ("START-HERE.md", "ADR-LOG.md")
 MANIFEST = "state/manifest.json"
 PROBE = "state/.write-probe"
+# Local recovery copies and transient helper input: never committed back, so never reported or hashed.
+LOCAL_ONLY = ("state/backups", "state/inbox")
 
 
 def _walk(root: Path):
+    skip = {(root / d).resolve() for d in LOCAL_ONLY}
     for top in MANAGED:
         base = root / top
         if base.is_dir():
             for dp, dns, fns in os.walk(base):
-                dns[:] = [d for d in dns if d != "__pycache__"]
+                dns[:] = [d for d in dns if d != "__pycache__" and (Path(dp) / d).resolve() not in skip]
                 for f in fns:
                     yield Path(dp) / f
     for f in TOP_FILES:
         if (root / f).is_file():
             yield root / f
+
+
+def _stage(rel: str) -> bool:
+    """Does a session need this file staged? The core reads records (`json/`) and state, never the generated `md/` views, and the
+    approved stories' `md/` are the user-editable copies that `changes check` compares. Those same files are what `manifest` hashes."""
+    parts = rel.split("/")
+    if parts[-1] in TOP_FILES:  # generated views, rewritten by every writing command
+        return False
+    if parts[0] in ("state", "snapshots", "source", "extracted") or "json" in parts[:-1]:
+        return True
+    return rel.startswith("stories/approved/md/")
 
 
 def _rel(root: Path, f: Path) -> str:
@@ -59,6 +73,28 @@ def changed(before: dict, after: dict) -> dict:
     return {"changed_files": written, "removed_files": removed}
 
 
+BRIDGE = "state/bridge.json"
+
+
+def bridge_on(root) -> bool:
+    """Is bridge mode recorded for this project? Shell state does not persist between calls, so the switch lives in `state/`."""
+    try:
+        return bool(root) and bool(read_json(Path(root) / BRIDGE).get("on"))
+    except Exception:
+        return False
+
+
+def bridge(root, mode: str | None = None) -> dict:
+    """`bridge on|off` records whether every command reports `changed_files` / `removed_files` (Cowork); no argument shows it."""
+    root = Path(root)
+    if mode:
+        atomic_write_text(root / BRIDGE, canonical_json({"on": mode == "on"}) + "\n")
+    on = bridge_on(root)
+    return {"bridge": "on" if on else "off",
+            "note": "Every command now reports changed_files and removed_files: commit exactly those back." if on
+                    else "Commands report changed_files only with --changed-files."}
+
+
 def _sha(f: Path) -> str:
     h = hashlib.sha256()
     with open(f, "rb") as fh:
@@ -67,17 +103,29 @@ def _sha(f: Path) -> str:
     return h.hexdigest()
 
 
+def stage_list(root) -> dict:
+    """The project files to copy into a cloud workspace at session start (everything else is generated or local-only)."""
+    root = Path(root)
+    files = sorted(r for r in (_rel(root, f) for f in _walk(root)) if _stage(r) and r != PROBE)
+    return {"stage": files, "count": len(files),
+            "not_needed": "md/ views (except stories/approved/md/), reports/, START-HERE.md, ADR-LOG.md; state/backups/ and state/inbox/ are local only",
+            "also": "the BRD at state.source.original_path (take a fresh copy), and any file the user says they edited"}
+
+
 def hashes(root) -> dict[str, str]:
     root = Path(root)
-    return {_rel(root, f): _sha(f) for f in sorted(_walk(root)) if _rel(root, f) not in (MANIFEST, PROBE)}
+    return {r: _sha(f) for f in sorted(_walk(root)) if _stage(r := _rel(root, f)) and r not in (MANIFEST, PROBE)}
 
 
-def manifest(root, write: bool = False, full: bool = False) -> dict:
+def manifest(root, write: bool = False, full: bool = False, stage: bool = False) -> dict:
     """Compare the project tree with the manifest committed at the end of the last stage (`state/manifest.json`).
 
-    Default output is small: counts, the tree hash and the drift. `--full` lists every hash. `--write` records the current
-    tree as the new committed state (call it after the files of a stage have been committed back)."""
+    It covers the files a session stages (`stage_list`), so a lean staged copy is in sync. Default output is small: counts, the
+    tree hash and the drift. `--full` lists every hash. `--write` records the current tree as the new committed state (call it
+    after the files of a stage have been committed back). `--stage-list` returns the files to stage instead."""
     root = Path(root)
+    if stage:
+        return stage_list(root)
     now = hashes(root)
     stored_path = root / MANIFEST
     stored = None

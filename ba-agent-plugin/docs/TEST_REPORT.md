@@ -22,6 +22,19 @@ Measured with `python -m tests.measure_efficiency` on the 1.9.0 tree (`git archi
 
 Reading these honestly: the per-stage prompt surface fell by only 1 to 8 %, because the router gained the optional-helpers and file-bridge lines while the stage files shrank. The larger gains are elsewhere: ten skill listings no longer advertised in every session, about 3 K tokens saved per CLI lookup, one third less per gap packet, no transcription of PDF/DOC/RTF/XLSX BRDs (about twice the document size) when a converter exists, and no helper agents spawned by default. The work order's estimate of 1 to 2 K tokens per entry command from slimmer commands was not reached (about 0.3 K measured).
 
+### Follow-up fixes (audit of 1.10.0, 2026-10-25)
+
+`python -m unittest discover -s tests -t .` -> `Ran 326 tests in 158.8s - OK (skipped=1)` (Python 3.14, Windows 10). Prompt surface (bytes, `python -m tests.measure_efficiency`):
+
+| Surface | 1.10.0 | after fixes |
+|---|---|---|
+| `ba-workflow/SKILL.md` | 7,044 | 4,979 |
+| Skill description (chars) | 200 | 157 |
+| Gap session (router + gap loop) | 11,323 | 8,918 |
+| Story session | 11,196 | 9,131 |
+| `/triage-gaps` | 14,374 | 11,969 |
+| `/triage-stories` | 16,920 | 14,855 |
+
 Not run: Claude Cowork (so the file-bridge protocol is inferred, not observed), `convert` with LibreOffice or `pypdf` (only `pdftotext` and a hand-built XLSX were exercised), a live session with the one-skill layout.
 
 ## 1. Automated tests — 300 run, 299 passed, 1 skipped, 0 failed (re-run 2026-10-25 for 1.9.0; adds `test_gap_folders` (10: gap folders by status, migration of a 1.8 layout, one-step close), `test_cowork` (10: `find`, START-HERE.md, PDF hint, default baseline approver) and `test_adr`)
