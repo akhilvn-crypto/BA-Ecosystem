@@ -26,7 +26,7 @@ Each stage reads only what it needs. One skill (`ba-workflow`) is advertised; st
 **Claude Code CLI** (tested): `claude --plugin-dir /path/to/ba-agent-plugin` (one session), then `/ba-agent:start path/to/BRD.docx`.
 Persistent (not run here, as it changes your Claude config): from the folder that contains `.claude-plugin/marketplace.json` (`D:\BA-Agents`) run `claude plugin marketplace add ./` then `claude plugin install ba-agent@ba-agents`.
 
-**Claude Cowork** (not verified in this environment): build the upload file with `python scripts/package_plugin.py` → `dist/ba-agent-1.10.1.zip`, then *Customize → Plugins → Add → Upload plugin*. Commands appear as `/ba-agent:start` etc. Cowork's local-folder and script-execution behaviour is not documented well enough to claim support — see the compatibility report.
+**Claude Cowork** (not verified in this environment): build the upload file with `python scripts/package_plugin.py` → `dist/ba-agent-1.10.2.zip`, then *Customize → Plugins → Add → Upload plugin*. Commands appear as `/ba-agent:start` etc. Cowork's local-folder and script-execution behaviour is not documented well enough to claim support — see the compatibility report.
 
 Commands: `/ba-agent:start [BRD or project folder]` · `/ba-agent:status` · `/ba-agent:review` · `/ba-agent:triage-gaps` · `/ba-agent:triage-stories` · `/ba-agent:changes`. You normally only need `start`.
 
@@ -37,7 +37,7 @@ Python 3.9+ on the machine that runs the plugin (standard library only — **not
 ## Develop / test
 
 ```
-python -m unittest discover -s tests -t . -v      # run from this folder; 332 tests
+python -m unittest discover -s tests -t . -v      # run from this folder; 336 tests
 claude plugin validate .                            # manifest, skills, agents, commands
 ```
 

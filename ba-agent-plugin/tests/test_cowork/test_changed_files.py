@@ -101,7 +101,32 @@ class ChangedFilesTests(BATest):
 
     def test_the_new_project_path_tells_the_model_to_turn_the_bridge_on(self):
         text = (PLUGIN / "skills/ba-workflow/references/stages/brd-ingestion.md").read_text(encoding="utf-8")
-        self.assertIn("Add `--changed-files` to `init`, then run `bridge on`", text)
+        self.assertIn('--root "<output folder>" --changed-files init --brd "<BRD path>"`, then `bridge on`', text)
+
+    def test_init_accepts_the_flag_after_the_command(self):
+        out = ba(self.tmp / "fresh", "init", "--brd", str(self.brd_copy()), "--changed-files", changed=False)
+        self.assertTrue(out["ok"], out)
+        self.assertTrue(out["changed_files"])
+
+    def test_the_flag_works_before_or_after_the_command(self):
+        p = self.new_project()
+        self.assertTrue(ba(p.root, "owner", "show", "--changed-files", changed=False)["ok"])
+        self.assertTrue(ba(p.root, "--changed-files", "owner", "show", changed=False)["ok"])
+
+    def test_pretty_after_the_command_indents_the_json(self):
+        p = self.with_gaps()
+        self.set_owner(p, *OWNER)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            cli.main(["--root", str(p.root), "gaps", "next", "--limit", "1", "--pretty"])
+        text = buf.getvalue()
+        self.assertTrue(json.loads(text)["ok"])
+        self.assertIn('\n  "ok"', text)
+
+    def test_a_command_without_the_flags_is_unchanged(self):
+        p = self.new_project()
+        out = ba(p.root, "owner", "show", changed=False)
+        self.assertNotIn("changed_files", out)
 
 
 class ManifestTests(BATest):

@@ -71,6 +71,15 @@ def _text(a, name):
     return v
 
 
+GLOBAL_FLAGS = ("--changed-files", "--pretty")
+
+
+def _hoist(argv):
+    """Global flags work before or after the command: move them to the front, where the top-level parser reads them."""
+    argv = list(argv)
+    return [a for a in argv if a in GLOBAL_FLAGS] + [a for a in argv if a not in GLOBAL_FLAGS]
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="ba.py", description="Interactive BA plugin — deterministic workflow core")
     ap.add_argument("--root", help="project folder (or env BA_PROJECT_ROOT, or cwd if it is a project)")
@@ -434,7 +443,7 @@ def main(argv: list[str] | None = None) -> int:
         except Exception:
             pass
     ap = build_parser()
-    ns = ap.parse_args(argv)
+    ns = ap.parse_args(_hoist(sys.argv[1:] if argv is None else argv))
     try:
         if ns.args_file:
             _apply_args_file(ns, ns.args_file)

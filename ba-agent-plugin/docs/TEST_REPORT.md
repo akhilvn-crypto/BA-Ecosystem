@@ -24,7 +24,7 @@ Reading these honestly: the per-stage prompt surface fell by only 1 to 8 %, beca
 
 ### Follow-up fixes (audit of 1.10.0, 2026-10-25)
 
-`python -m unittest discover -s tests -t .` -> `Ran 332 tests in 158.9s - OK (skipped=1)` (1.10.1: 326 + 6 new in `test_cowork` for R1, R2 and R4) (Python 3.14, Windows 10). Prompt surface (bytes, `python -m tests.measure_efficiency`):
+`python -m unittest discover -s tests -t .` -> `Ran 336 tests in 165.6s - OK (skipped=1)` (1.10.2: 332 + 4 new in `test_cowork` for global flag position; 1.10.1: 326 + 6 for R1, R2 and R4) (Python 3.14, Windows 10). Prompt surface (bytes, `python -m tests.measure_efficiency`):
 
 | Surface | 1.10.0 | after fixes |
 |---|---|---|

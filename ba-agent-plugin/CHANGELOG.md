@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.10.2
+Global flags `--changed-files` and `--pretty` work before or after the command; guides show the exact command line.
+- **Parser.** `--changed-files` and `--pretty` were accepted only before the command name, so `ba.py --root X init --brd B --changed-files` failed with "unrecognized arguments". `main` now moves these two exact tokens to the front before parsing (`_hoist` in `ba_lib/cli.py`).
+- **Guides.** `stages/brd-ingestion.md` step 4 shows the full `init` command line with the flag in place; `cowork-sync.md` says to put the flag right after `ba.py`.
+- **Tests.** Four new tests in `test_cowork/test_changed_files.py` (flag after `init`, flag first or last on `owner show`, `--pretty` after the command, no flag means no `changed_files`); the guide-wording check follows the new text.
+
 ## 1.10.1
 Fixes from `ba-agent-1.10.0-audit.md` (D1-D8) and `ba-agent-reaudit-3.md` (R1-R5). The version is bumped so a Cowork upload is not mistaken for the cached 1.10.0.
 - **R1 new projects turn the bridge on.** `stages/brd-ingestion.md` step 4: with file-bridge tools, `init --changed-files`, then `bridge on`, then commit what `init` reported together with `state/bridge.json`.
