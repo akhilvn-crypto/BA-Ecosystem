@@ -1,11 +1,11 @@
-"""Presentation layer: the chat card and the choice dialog for ONE gap or story, built by the core.
+"""Presentation layer: the chat card and the choice dialog for ONE gap or acceptance-criteria record, built by the core.
 
 The model relays what is built here instead of composing it, so every presentation is the same size and shape, costs
 no composition tokens and cannot drift from the rules (which options exist, when `Approve` is withheld, ...).
 
 `dialog` is a ready `AskUserQuestion` payload (one question; the tool adds the free-text “Other” box itself).
 `inline: true` means the dialog already carries everything the human needs, so **no separate chat message is sent**.
-`card` is the compact markdown for when it does not (long history, a story's acceptance criteria). Without the dialog
+`card` is the compact markdown for when it does not (long history, a requirement's acceptance criteria). Without the dialog
 tool, `card` (when present) + `fallback` replace it; for an inline gap `fallback` is the whole message.
 `fallback` is built only on request (`--fallback`, after the dialog tool failed): it repeats the dialog text, so by default
 it is not sent.
@@ -53,15 +53,15 @@ def gap_options(g: dict, carry_ok: bool, blocker_why: str | None, suggested: dic
     if suggested:
         opts.append(_opt("Suggested Answer", short(f"Use: {suggested.get('answer')} ({suggested.get('source')})", 150)))
     opts.append(_opt("Explain This Question", "Explain it to me in plain words with an example"))
-    opts.append(_opt("Carry Forward", "Keep this gap open, continue to the stories, and flag them until it is answered"))
+    opts.append(_opt("Carry Forward", "Keep this gap open, continue to the acceptance criteria, and flag them until it is answered"))
     return opts
 
 
 def gap_view(g: dict, ctx: dict) -> dict:
-    """`ctx`: reqmap (id → requirement), blocks_stories, carry_ok, blocker_why, left, story_ids, owner_missing, fallback."""
+    """`ctx`: reqmap (key → requirement), blocks_ac, carry_ok, blocker_why, left, ac_keys, fallback."""
     reqmap = ctx["reqmap"]
-    reqs = [reqmap[r] for r in g["impacted_requirement_ids"] if r in reqmap]
-    flags = ["blocks stories"] if ctx["blocks_stories"] else []
+    reqs = [reqmap[r] for r in g["impacted_req_keys"] if r in reqmap]
+    flags = ["blocks acceptance criteria"] if ctx["blocks_ac"] else []
     if g.get("material"):
         flags.append("sensitive")
     if g["status"] == "DEFERRED":
@@ -69,7 +69,7 @@ def gap_view(g: dict, ctx: dict) -> dict:
     elif g.get("carry_forward"):
         flags.append("carried forward")
     head = f"[{g['priority']}" + (f" · {', '.join(flags)}" if flags else "") + "]"
-    affects = ", ".join(f"{r['requirement_id']} {short(r['title'], 40)}" for r in reqs) or ", ".join(g["impacted_requirement_ids"])
+    affects = ", ".join(f"{r['requirement_id']} {short(r['title'], 40)}" for r in reqs) or ", ".join(g["impacted_req_keys"])
     suggested = g.get("suggested_answer")
     options = gap_options(g, ctx["carry_ok"], ctx["blocker_why"], suggested)
 
@@ -86,12 +86,13 @@ def gap_view(g: dict, ctx: dict) -> dict:
             f"**Question:** {g['question']}", f"**Evidence:** {g['evidence']}", f"**Why it matters:** {g['why_it_matters']}"]
     card.append("**Affects:** " + ("; ".join(f"{r['requirement_id']} {r['title']} — “{short(r['statement'], 160)}” ({r['source_reference']})"
                                              for r in reqs) or affects))
-    if ctx["story_ids"]:
-        card.append("**Stories already written for these requirements:** " + ", ".join(ctx["story_ids"]))
+    if ctx["ac_keys"]:
+        card.append("**Acceptance criteria already written for:** " + ", ".join(reqmap[k]["requirement_id"] if k in reqmap else k
+                                                                           for k in ctx["ac_keys"]))
     if suggested:
         card.append(f"**Suggestion** from {suggested.get('source')}: {suggested.get('answer')} — only an answer if you choose it.")
     if ctx["carry_ok"] and g["status"] == "WAITING_FOR_ANSWER":
-        card.append("You can carry this forward: it stays open and visible, stories are still written and flagged until you answer.")
+        card.append("You can carry this forward: it stays open and visible, acceptance criteria are still written and flagged until you answer.")
     elif ctx["blocker_why"] and g["status"] == "WAITING_FOR_ANSWER":
         card.append(f"Cannot be carried forward: {ctx['blocker_why']}.")
     d = g.get("deferral")
@@ -109,7 +110,7 @@ def gap_view(g: dict, ctx: dict) -> dict:
         if c["status"] == "OPEN":
             card.append(f"**Open conflict:** {short(c.get('description'), 240)}")
     if g.get("needs_impact_review"):
-        card.append("**This gap needs an impact review after a BRD change** — check the question still stands.")
+        card.append("**This gap needs an impact review after a change in the requirements** — check the question still stands.")
     dialog = {"header": g["gap_id"], "question": q, "options": options, "multiSelect": False}
     reply = _fallback(options, "Type an answer or instruction") if ctx.get("fallback") else None
     if inline:  # the dialog text already says everything: no card, and without the tool the question itself is the message
@@ -117,19 +118,17 @@ def gap_view(g: dict, ctx: dict) -> dict:
     return {"inline": False, "card": "\n".join(card), "dialog": dialog, **({"fallback": reply} if reply else {})}
 
 
-# ---------------------------------------------------------------- stories
+# ------------------------------------------------------- acceptance criteria
 
 def blocker_tags(blockers: list[str]) -> list[str]:
     """One or two words per blocker for the dialog; the full wording stays on the card."""
     out = []
     for b in blockers:
-        if "baseline" in b:
-            t = "baseline needs refreshing"
-        elif "BRD change" in b:
-            t = "BRD change awaiting review"
+        if "source change" in b:
+            t = "source change awaiting review"
         elif "impact review" in b:
             t = "impact review pending"
-        elif "linked requirement" in b:
+        elif "requirement text changed" in b:
             t = "requirement changed"
         elif "unresolved gap" in b:
             t = "open " + b.split("gap(s): ", 1)[-1]
@@ -140,74 +139,75 @@ def blocker_tags(blockers: list[str]) -> list[str]:
     return out
 
 
-def story_options(s: dict, blockers: list[str], flagged: bool, cause: str | None, bucket: str) -> list[dict]:
-    v = s["version"]
-    approve = _opt(f"Approve v{v}", "Saves this exact version to stories/approved/")
+def ac_options(a: dict, blockers: list[str], flagged: bool, cause: str | None, bucket: str) -> list[dict]:
+    v = a["version"]
+    approve = _opt(f"Approve v{v}", "Saves this exact version to acceptance/approved/ and adds it to the enriched copy")
     if not blockers:
         if bucket == "deferred":
-            return [approve, _opt("Not approved", "Saves it to stories/unapproved/, never to approved/"),
-                    _opt("Keep deferred", "Leave it in stories/deferred/; it is listed again next time")]
+            return [approve, _opt("Not approved", "Saves it to acceptance/unapproved/, never to approved/"),
+                    _opt("Keep deferred", "Leave it in acceptance/deferred/; it is listed again next time")]
         if bucket == "unapproved":
             return [_opt(f"Approve v{v}", "Reconsider and approve this exact version"),
-                    _opt("Defer story", "Parks it in stories/deferred/ to revisit later"),
-                    _opt("Keep as is", "Leave it in stories/unapproved/; nothing changes")]
-        return [approve, _opt("Defer story", "Parks it in stories/deferred/ to revisit later"),
-                _opt("Not approved", "Saves it to stories/unapproved/, never to approved/")]
-    keep = _opt("Keep deferred", "Leave it in stories/deferred/; it is listed again next time") if bucket == "deferred" \
+                    _opt("Defer", "Parks it in acceptance/deferred/ to revisit later"),
+                    _opt("Keep as is", "Leave it in acceptance/unapproved/; nothing changes")]
+        return [approve, _opt("Defer", "Parks it in acceptance/deferred/ to revisit later"),
+                _opt("Not approved", "Saves it to acceptance/unapproved/, never to approved/")]
+    keep = _opt("Keep deferred", "Leave it in acceptance/deferred/; it is listed again next time") if bucket == "deferred" \
         else _opt("Keep as is", "Nothing changes; it is listed again next time")
     out = []
-    if flagged or any("linked requirement" in b for b in blockers):
-        out.append(_opt("Update story", "Apply the decision and create the next version, which comes back here for approval"))
+    if flagged or any("requirement text changed" in b for b in blockers):
+        out.append(_opt("Update criteria", "Apply the decision and create the next version, which comes back here for approval"))
         if flagged and cause != "gap-resolved":
-            out.append(_opt("No change needed", "Confirm the story is unaffected (records your words)"))
+            out.append(_opt("No change needed", "Confirm the criteria are unaffected (records your words)"))
     if bucket != "deferred":
-        out.append(_opt("Defer story", "Parks it in stories/deferred/ to revisit later"))
+        out.append(_opt("Defer", "Parks it in acceptance/deferred/ to revisit later"))
     out.append(keep)
     return out[:4]
 
 
-def story_card(s: dict, live_gaps: list[str], blockers: list[str], update_ctx: list[dict]) -> str:
-    us = s["user_story"]
-    notes = s.get("notes") or {}
-    lines = [f"**{s['story_id']} · {s['title']} · v{s['version']}** ({s['status'].replace('_', ' ').title()}"
-             + (f" · {s['readiness'].replace('_', ' ').title()}" if s.get("readiness") else "") + ")",
-             f"As a **{us['role']}**, I want {us['capability']}, so that {us['value']}.", "**Acceptance criteria**"]
-    lines += [f"{i}. {c}" for i, c in enumerate(s["acceptance_criteria"], 1)]
-    lines.append("**Traceability:** " + ", ".join(s["requirement_ids"]) + (f" · decisions {', '.join(s['decision_ids'])}" if s["decision_ids"] else "")
-                 + (f" · {', '.join(s['source_references'])}" if s["source_references"] else ""))
-    for u in s.get("unresolved_decisions") or []:
+def ac_card(a: dict, ctx: dict) -> str:
+    notes = a.get("notes") or {}
+    lines = [f"**{ctx['label']} · {short(a.get('requirement_title') or '', 70)} · AC v{a['version']}** ({a['status'].replace('_', ' ').title()}"
+             + (f" · {a['readiness'].replace('_', ' ').title()}" if a.get("readiness") else "") + ")"]
+    if ctx.get("req_text"):
+        lines.append(f"**Requirement** ({ctx.get('source_ref') or ''}): “{short(ctx['req_text'], 700)}”")
+    lines.append("**Acceptance criteria**")
+    lines += [f"{i}. {c}" for i, c in enumerate(a["acceptance_criteria"], 1)]
+    if a["decision_ids"]:
+        lines.append("**Decisions applied:** " + ", ".join(a["decision_ids"]))
+    for u in a.get("open_gap_refs") or []:
         lines.append(f"**Open {u['gap_id']}** ({u.get('priority', '?')}{', carried forward' if u.get('carried_forward') else ''}) — "
                      f"{short(u.get('question'), 140)} · impact: {short(u['potential_impact'], 200)}"
                      + (f" · working assumption, NOT approved: {short(u['interim_assumption'], 140)}" if u.get("interim_assumption") else ""))
-    extra_live = [g for g in live_gaps if g not in {u["gap_id"] for u in s.get("unresolved_decisions") or []}]
+    extra_live = [g for g in ctx["live_gaps"] if g not in {u["gap_id"] for u in a.get("open_gap_refs") or []}]
     if extra_live:
-        lines.append(f"**Open gaps not declared in the story:** {', '.join(extra_live)}")
+        lines.append(f"**Open gaps not declared in the criteria:** {', '.join(extra_live)}")
     for label, key in (("Business rules", "business_rules"), ("Validation/exceptions", "validation_exceptions"), ("Non-functional", "non_functional")):
         if notes.get(key):
             lines.append(f"**{label}:** {short(notes[key], 200)}")
-    if s.get("assumptions"):
-        lines.append("**Assumptions:** " + "; ".join(short(a, 120) for a in s["assumptions"]))
-    ir = s.get("impact_review") or {}
+    if a.get("assumptions"):
+        lines.append("**Assumptions:** " + "; ".join(short(x, 120) for x in a["assumptions"]))
+    ir = a.get("impact_review") or {}
     if ir.get("pending"):
         lines.append(f"**Flagged for impact review:** {ir.get('reason')}")
-    for u in update_ctx:
+    for u in ctx["update_ctx"]:
         lines.append(f"**Decision to apply — {u['decision_id']} ({u['gap_id']}):** {u['interpretation']}")
-    if s["status"] == "DEFERRED" and s.get("deferral"):
-        lines.append(f"**Deferred** {_day(s['deferral'].get('at_ist'))}: {s['deferral'].get('reason') or 'no reason given'}")
-    if blockers:
-        lines.append("**Cannot be approved yet:** " + "; ".join(blockers))
+    if a["status"] == "DEFERRED" and a.get("deferral"):
+        lines.append(f"**Deferred** {_day(a['deferral'].get('at_ist'))}: {a['deferral'].get('reason') or 'no reason given'}")
+    if ctx["blockers"]:
+        lines.append("**Cannot be approved yet:** " + "; ".join(ctx["blockers"]))
     return "\n".join(lines)
 
 
-def story_view(s: dict, ctx: dict) -> dict:
-    """`ctx`: blockers, bucket, live_gaps, update_ctx, position ('2 of 6' or None), fallback."""
-    ir = s.get("impact_review") or {}
+def ac_view(a: dict, ctx: dict) -> dict:
+    """`ctx`: label, req_text, source_ref, blockers, bucket, live_gaps, update_ctx, position ('2 of 6' or None), fallback."""
+    ir = a.get("impact_review") or {}
     flagged = bool(ir.get("pending"))
-    options = story_options(s, ctx["blockers"], flagged, ir.get("cause"), ctx["bucket"])
+    options = ac_options(a, ctx["blockers"], flagged, ir.get("cause"), ctx["bucket"])
     can = not ctx["blockers"]
-    q = (f"{s['story_id']} v{s['version']}" + (f" ({ctx['position']})" if ctx.get("position") else "") + ": "
+    q = (f"{ctx['label']} AC v{a['version']}" + (f" ({ctx['position']})" if ctx.get("position") else "") + ": "
          + ("approve it, suggest changes, or choose below? Type suggestions in “Other”."
             if can else f"cannot be approved yet ({'; '.join(blocker_tags(ctx['blockers']))}). Pick an option, or type edit suggestions in “Other”."))
-    return {"card": story_card(s, ctx["live_gaps"], ctx["blockers"], ctx["update_ctx"]),
-            "dialog": {"header": s["story_id"], "question": q, "options": options, "multiSelect": False},
+    return {"card": ac_card(a, ctx),
+            "dialog": {"header": short(ctx["label"], 12), "question": q, "options": options, "multiSelect": False},
             **({"fallback": _fallback(options, "Type suggestions")} if ctx.get("fallback") else {})}

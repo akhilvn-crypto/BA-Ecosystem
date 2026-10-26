@@ -1,8 +1,8 @@
-"""State machine, decision-owner gate, IST closure audit, conflict handling, story approval rules."""
+"""State machine, decision-owner gate, IST closure audit, conflict handling, acceptance-criteria approval rules."""
 import json
 import unittest
 
-from tests.helpers import BATest, basemod, checks, gapmod, projmod, reqs, stories, util
+from tests.helpers import BATest, acs, checks, gapmod, key, projmod, util
 from ba_lib.util import BAError
 
 
@@ -17,21 +17,64 @@ def code_of(fn, *a, **k):
 class TransitionTableTests(BATest):
     def test_stage_transitions_enforced(self):
         p = self.new_project()
-        self.assertEqual(p.state["stage"], "BRD_PARSED")
+        self.assertEqual(p.state["stage"], "SOURCE_INDEXED")
         with self.assertRaises(BAError) as c:
             p.set_stage("COMPLETED", "x")
         self.assertEqual(c.exception.code, "INVALID_TRANSITION")
         with self.assertRaises(BAError):
-            p.set_stage("GAP_ANALYSIS", "x")  # cannot skip REQUIREMENTS_READY
+            p.set_stage("AC_DRAFTING", "x")  # cannot skip gap analysis
+        with self.assertRaises(BAError):
+            p.set_stage("WAITING_FOR_AC_REVIEW", "x")
+
+    def test_new_project_starts_at_source_indexed_with_the_read_only_index(self):
+        p = self.new_project()
+        self.assertEqual(p.state["schema_version"], "2.0")
+        stages = [e for e in p.audit_events() if e["event_type"] == "STAGE_CHANGED"]
+        self.assertEqual([(e["from_stage"], e["to_stage"]) for e in stages], [("INITIALIZED", "SOURCE_INDEXED")])
+        self.assertEqual(len(p.requirements()), 9)
+
+    def test_the_whole_stage_path_of_the_v2_state_machine(self):
+        p = self.with_gaps()
+        self.assertEqual(p.state["stage"], "GAP_ANALYSIS", "adding gaps starts gap analysis")
+        self.set_owner(p)
+        gapmod.next_gaps(p, 10)
+        self.assertEqual(p.state["stage"], "WAITING_FOR_GAP_INPUT")
+        self.resolve_all(p)
+        gapmod.commit_analysis(p, True)
+        self.assertEqual(p.state["stage"], "WAITING_FOR_GAP_INPUT", "committing does not skip ahead; drafting criteria does")
+        acs.add_acs(p, [self.ac_item("LIB-001")])
+        self.assertEqual(p.state["stage"], "AC_DRAFTING")
+        acs.next_ac(p)
+        self.assertEqual(p.state["stage"], "WAITING_FOR_AC_REVIEW")
+        self.approve(p, "LIB-001")
+        out = checks.complete_workflow(p)
+        self.assertFalse(out["complete"], "the other requirements still have no criteria")
+        self.assertEqual(p.state["stage"], "WAITING_FOR_AC_REVIEW")
+        acs.add_acs(p, [self.ac_item(r) for r in ("LIB-002", "LIB-003", "LIB-004", "LIB-005", "LIB-006", "LIB-007", "LIB-008", "LIB-009")])
+        for e in p.requirements():
+            if e["id"] != "LIB-001":
+                acs.approve(p, e["req_key"], 1, "approve", "Priya Nair", "Product Owner")
+        self.assertTrue(checks.complete_workflow(p)["complete"])
+        self.assertEqual(p.state["stage"], "COMPLETED")
+        # a new gap on an approved requirement reopens the workflow to gap input
+        gapmod.add_gaps(p, [dict(self.gap_items()[1], title="Extra", question="What extra rule applies?", impacted_req_keys=["LIB-002"], priority="LOW")])
+        self.assertEqual(p.state["stage"], "WAITING_FOR_GAP_INPUT")
+
+    def test_stage_table_has_no_story_or_baseline_stages(self):
+        self.assertEqual(projmod.STAGES, ["INITIALIZED", "SOURCE_INDEXED", "GAP_ANALYSIS", "WAITING_FOR_GAP_INPUT", "AC_DRAFTING",
+                                         "WAITING_FOR_AC_REVIEW", "COMPLETED", "BLOCKED", "PAUSED"])
+        self.assertEqual(projmod.STAGE_TRANSITIONS["SOURCE_INDEXED"], {"GAP_ANALYSIS"})
+        self.assertIn("AC_DRAFTING", projmod.STAGE_TRANSITIONS["WAITING_FOR_GAP_INPUT"])
+        self.assertTrue({"GAP_ANALYSIS", "WAITING_FOR_GAP_INPUT"} <= projmod.STAGE_TRANSITIONS["COMPLETED"], "later work reopens to gap input")
 
     def test_pause_resumes_only_to_saved_stage(self):
         p = self.with_requirements()
         p.set_stage("PAUSED", "pause")
-        self.assertEqual(p.state["resume_stage"], "REQUIREMENTS_READY")
+        self.assertEqual(p.state["resume_stage"], "SOURCE_INDEXED")
         with self.assertRaises(BAError):
             p.set_stage("GAP_ANALYSIS", "x")
-        p.set_stage("REQUIREMENTS_READY", "resume")
-        self.assertEqual(p.state["stage"], "REQUIREMENTS_READY")
+        p.set_stage("SOURCE_INDEXED", "resume")
+        self.assertEqual(p.state["stage"], "SOURCE_INDEXED")
 
     def test_gap_cannot_resolve_without_validated_resolution(self):
         p = self.with_gaps()
@@ -49,51 +92,87 @@ class TransitionTableTests(BATest):
         self.assertNotIn("RESOLVED", projmod.GAP_TRANSITIONS["DEFERRED"])
         self.assertEqual(projmod.GAP_TRANSITIONS["RESOLVED"], {"REOPENED"})
 
-    def test_story_cannot_be_approved_from_deferred_or_without_evidence(self):
-        p = self.to_stories()
-        self.assertEqual(code_of(stories.approve, p, "US-001", 1, ""), "APPROVAL_EVIDENCE_REQUIRED")
-        self.assertEqual(code_of(stories.approve, p, "US-001", 2, "approve"), "VERSION_MISMATCH")
-        stories.defer(p, "US-001", 1, "later")
-        self.assertEqual(code_of(stories.approve, p, "US-001", 1, "approve"), "STORY_DEFERRED")
+    def test_ac_status_table(self):
+        self.assertEqual(projmod.AC_TRANSITIONS["APPROVED"], {"SUPERSEDED"})
+        self.assertEqual(projmod.AC_TRANSITIONS["SUPERSEDED"], set())
+        self.assertIn("APPROVED", projmod.AC_TRANSITIONS["IN_REVIEW"])
+        self.assertNotIn("APPROVED", projmod.AC_TRANSITIONS["CHANGES_REQUESTED"])
+        self.assertNotIn("APPROVED", projmod.AC_TRANSITIONS["DEFERRED"])
+
+    def test_ac_cannot_be_approved_from_deferred_or_without_evidence(self):
+        p = self.to_acs(2)
+        self.assertEqual(code_of(acs.approve, p, "LIB-001", 1, ""), "APPROVAL_EVIDENCE_REQUIRED")
+        self.assertEqual(code_of(acs.approve, p, "LIB-001", 2, "approve"), "VERSION_MISMATCH")
+        acs.defer(p, "LIB-001", 1, "later")
+        self.assertEqual(code_of(acs.approve, p, "LIB-001", 1, "approve"), "AC_DEFERRED")
+
+    def test_criteria_cannot_be_written_before_analysis_or_for_unknown_requirements(self):
+        p = self.with_gaps()
+        self.assertEqual(code_of(acs.add_acs, p, [self.ac_item("LIB-001")]), "ANALYSIS_INCOMPLETE")
+        self.to_ac_stage(p)
+        self.assertEqual(code_of(acs.add_acs, p, [dict(self.ac_item("LIB-001"), req_key="LIB-404")]), "ACS_REJECTED")
+        self.assertEqual(code_of(acs.add_acs, p, [self.ac_item("LIB-001", acceptance_criteria=["The member can register."])]), "ACS_REJECTED")
 
 
-class UnapprovedStoryTests(BATest):
-    """'Not approved' stories are saved in their own folder, never in approved/."""
+class LegacyProjectTests(BATest):
+    def test_a_1x_project_is_not_opened_by_2x(self):
+        p = self.new_project()
+        st = p.read_json("state/workflow.json")
+        st["schema_version"] = "1.0"
+        st["stage"] = "REQUIREMENTS_BASELINED"
+        p.path("state/workflow.json").write_text(json.dumps(st), encoding="utf-8")
+        with self.assertRaises(BAError) as c:
+            projmod.Project.open(p.root)
+        self.assertEqual(c.exception.code, "LEGACY_PROJECT")
+        self.assertEqual((c.exception.details["stage"], c.exception.details["schema_version"]), ("REQUIREMENTS_BASELINED", "1.0"))
+        self.assertIn("1.10.2", c.exception.message)
 
-    def test_not_approved_story_is_saved_in_unapproved_folder(self):
-        p = self.to_stories()
-        stories.next_story(p)
-        out = stories.request_changes(p, "US-001", 1, "criteria too vague")
-        self.assertEqual(out["location"], "stories/unapproved/md/US-001.md")
-        self.assertTrue(p.exists("stories/unapproved/json/US-001.json") and p.exists("stories/unapproved/md/US-001.md"))
-        self.assertFalse(p.exists("stories/candidates/json/US-001.json"))
-        self.assertFalse(p.exists("stories/approved/json/US-001.json"))
-        self.assertEqual(code_of(stories.approve, p, "US-001", 1, "approve"), "STORY_UNAPPROVED")
-        self.assertIn("US-001", p.state["pending_story_ids"])
+    def test_status_of_a_legacy_project_stays_read_only_and_explains(self):
+        import subprocess
+        import sys
+        from tests.helpers import PLUGIN
+        p = self.new_project()
+        st = p.read_json("state/workflow.json")
+        st["schema_version"] = "1.0"
+        p.path("state/workflow.json").write_text(json.dumps(st), encoding="utf-8")
+        before = p.path("state/workflow.json").read_bytes()
+        r = subprocess.run([sys.executable, str(PLUGIN / "scripts" / "ba.py"), "--root", str(p.root), "status"], capture_output=True, text=True,
+                           encoding="utf-8")
+        out = json.loads(r.stdout)
+        self.assertEqual((out["ok"], out["legacy_project"]), (True, True))
+        self.assertEqual(p.path("state/workflow.json").read_bytes(), before, "nothing was written")
+
+
+class UnapprovedAcTests(BATest):
+    """'Not approved' records are saved in their own folder, never in approved/."""
+
+    def test_not_approved_record_is_saved_in_unapproved_folder(self):
+        p = self.to_acs(2)
+        acs.next_ac(p)
+        out = acs.request_changes(p, "LIB-001", 1, "criteria too vague")
+        name = projmod.ac_fname(key("LIB-001"))
+        self.assertEqual(out["location"], f"acceptance/unapproved/md/{name}.md")
+        self.assertTrue(p.exists(f"acceptance/unapproved/json/{name}.json") and p.exists(f"acceptance/unapproved/md/{name}.md"))
+        self.assertFalse(p.exists(f"acceptance/candidates/json/{name}.json"))
+        self.assertFalse(p.exists(f"acceptance/approved/json/{name}.json"))
+        self.assertEqual(code_of(acs.approve, p, "LIB-001", 1, "approve"), "AC_UNAPPROVED")
+        self.assertIn(key("LIB-001"), p.state["pending_ac_keys"])
         self.assertEqual(checks.validate_project(p)["errors"], [])
-        self.assertNotIn("US-001", [s["story_id"] for s in stories.next_story(p, batch=10)["stories"]])
-        self.assertEqual([s["story_id"] for s in stories.next_story(p, unapproved=True)["stories"]], ["US-001"])
+        self.assertNotIn(key("LIB-001"), [x["req_key"] for x in acs.next_ac(p, batch=10)["acs"]])
+        self.assertEqual([x["req_key"] for x in acs.next_ac(p, unapproved=True)["acs"]], [key("LIB-001")])
+        self.assertNotIn("Approved by", self.enriched(p, "membership.md"), "nothing unapproved is rendered into the document")
 
-    def test_editing_unapproved_story_makes_a_new_candidate_version(self):
-        p = self.to_stories()
-        stories.next_story(p)
-        stories.request_changes(p, "US-001", 1, "reword")
-        out = stories.edit(p, "US-001", {"title": "Reworded story title"}, "reword")
+    def test_editing_unapproved_record_makes_a_new_candidate_version(self):
+        p = self.to_acs(2)
+        acs.next_ac(p)
+        acs.request_changes(p, "LIB-001", 1, "reword")
+        crit = ["Given a visitor with a valid email, when they register, then the member account exists."]
+        out = acs.edit(p, "LIB-001", {"acceptance_criteria": crit}, "reword")
+        name = projmod.ac_fname(key("LIB-001"))
         self.assertEqual(out["new_version"], 2)
-        self.assertFalse(p.exists("stories/unapproved/json/US-001.json"))
-        self.assertTrue(p.exists("stories/candidates/json/US-001.json"))
-        self.assertTrue(p.exists("stories/archive/json/US-001.v1.json"))
-
-
-    def test_legacy_changes_requested_story_is_migrated_on_open(self):
-        p = self.to_stories()
-        stories.next_story(p)
-        stories.request_changes(p, "US-001", 1, "x")
-        for ext in ("json", "md"):  # simulate a 1.0.0 project
-            p.path(f"stories/unapproved/US-001.{ext}").replace(p.path(f"stories/candidates/US-001.{ext}"))
-        q = projmod.Project.open(p.root)
-        self.assertTrue(q.exists("stories/unapproved/json/US-001.json"))
-        self.assertFalse(q.exists("stories/candidates/json/US-001.json"))
+        self.assertFalse(p.exists(f"acceptance/unapproved/json/{name}.json"))
+        self.assertTrue(p.exists(f"acceptance/candidates/json/{name}.json"))
+        self.assertTrue(p.exists(f"acceptance/archive/json/{name}.v1.json"))
 
 
 class DecisionOwnerTests(BATest):
@@ -180,7 +259,6 @@ class ClosureAuditTests(BATest):
         self.assertEqual(ev["timezone"], "Asia/Kolkata")
         self.assertEqual(ev["closed_at_ist"], g["closed_at_ist"])
         self.assertEqual(ev["conflict_check"], {"status": "PASSED", "conflicting_artifact_ids": []})
-        self.assertIn("received_at", "".join(ev.keys()) + "received_at")  # response time stored separately
         self.assertNotEqual(ev["response_received_at_ist"], ev["closed_at_ist"])
         d = p.decisions()[g["decision_id"]]
         self.assertEqual(d["human_response"], "Block it and show a message")
@@ -226,24 +304,23 @@ class ClosureAuditTests(BATest):
 
 
 class ConflictTests(BATest):
-    """Tests 19, 20: answers that contradict the BRD / earlier decisions; confirmed change preserves history."""
+    """Tests 19, 20: answers that contradict the requirements / earlier decisions; a confirmed change keeps the history and never edits the source."""
 
     def test_answer_contradicting_requirement_cannot_be_closed_as_passed(self):
         p = self.with_gaps()
         self.set_owner(p)
         gapmod.next_gaps(p, 3)
         a = gapmod.record_answer(p, "GAP-003", "Members can borrow at most 8 books at once; block the 9th.")
-        self.assertTrue(any(c["artifact_id"] == "REQ-003" for c in a["candidate_conflicts"]), a)
+        self.assertTrue(any(c["artifact_id"] == "LIB-003" for c in a["candidate_conflicts"]), a)
         with self.assertRaises(BAError) as c:
             gapmod.resolve(p, "GAP-003", a["answer_id"], "Members can borrow at most 8 books at once.", "Priya Nair", "Product Owner", "ok", "close")
         self.assertEqual(c.exception.code, "CONFLICT_REVIEW_REQUIRED")
-        self.assertIn("REQ-003", c.exception.message)
+        self.assertIn("LIB-003", c.exception.message)
         self.assertEqual(p.gap("GAP-003")["status"], "WAITING_FOR_ANSWER")
-        self.assertEqual(p.requirement("REQ-003")["version"], 1)
         # the model/user confirms it IS a conflict -> recorded, raw answer preserved, still cannot pass
-        gapmod.record_conflict(p, "GAP-003", a["answer_id"], ["REQ-003"], "Answer says 8 books; REQ-003 says 5.")
+        gapmod.record_conflict(p, "GAP-003", a["answer_id"], ["LIB-003"], "Answer says 8 books; LIB-003 says 5.")
         self.assertEqual(code_of(gapmod.resolve, p, "GAP-003", a["answer_id"], "At most 8 books.", "Priya Nair", "Product Owner", "ok", "close",
-                                 reviewed_ids=["REQ-003"]), "CONFLICT_UNRESOLVED")
+                                 reviewed_ids=["LIB-003"]), "CONFLICT_UNRESOLVED")
         self.assertEqual(p.gap("GAP-003")["answers"][0]["response"], "Members can borrow at most 8 books at once; block the 9th.")
         self.assertIn("CONFLICT_DETECTED", [e["event_type"] for e in p.audit_events()])
 
@@ -257,42 +334,38 @@ class ConflictTests(BATest):
                              "Adds error path only.", "Yes", reviewed_ids=cands)
         self.assertEqual(out["status"], "RESOLVED")
 
-    def test_confirmed_change_updates_requirement_version_and_triggers_impact_review(self):
-        p = self.to_stories()
-        stories.add_stories(p, [self.story_item("Enforce the borrow limit", ("REQ-003",),
-                                                user_story=dict(role="Member", capability="to be stopped at my borrow limit", value="stock stays fair"),
-                                                acceptance_criteria=["Given a member holding 5 books, when they borrow a 6th, then the borrow is rejected with a limit message."])])
-        stories.approve(p, "US-003", 1, "Approved.", "Priya Nair", "Product Owner")
+    def test_confirmed_change_against_a_requirement_flags_approved_criteria_and_leaves_the_source_alone(self):
+        p = self.to_ac_stage()
+        before = {f.name: f.read_bytes() for f in self.src.iterdir() if f.is_file()}
+        acs.add_acs(p, [self.ac_item("LIB-003", acceptance_criteria=[
+            "Given a member holding 5 books, when they borrow a 6th, then the borrow is rejected with a limit message."])])
+        acs.approve(p, "LIB-003", 1, "Approved.", "Priya Nair", "Product Owner")
         # reopen flow: new gap about the limit, answer changes 5 -> 8
-        gapmod.add_gaps(p, [dict(self.gap_items()[2], title="Limit review", question="Should the borrow limit stay at 5?",
-                                 priority="CRITICAL", priority_rationale="Alters a core business rule.", impacted_requirement_ids=["REQ-003"])])
+        item = dict(self.gap_items()[2], title="Limit review", question="Should the borrow limit stay at 5?", priority="CRITICAL",
+                    priority_rationale="Alters a core business rule.", impacted_req_keys=["LIB-003"])
+        gapmod.add_gaps(p, [item])
+        self.assertEqual(p.state["stage"], "WAITING_FOR_GAP_INPUT")
         gapmod.next_gaps(p, 1)
         a = gapmod.record_answer(p, "GAP-004", "No, raise it to 8 books.")
-        with self.assertRaises(BAError):
+        with self.assertRaises(BAError):  # a conflict with LIB-003 that nobody confirmed
             gapmod.resolve(p, "GAP-004", a["answer_id"], "Limit is 8 books.", "Priya Nair", "Product Owner", "Changed limit", "yes")
-        # wrong: CHANGE_CONFIRMED without requirement update
         self.assertEqual(code_of(gapmod.resolve, p, "GAP-004", a["answer_id"], "Limit is 8 books.", "Priya Nair", "Product Owner", "Changed", "yes",
-                                 conflict_status="CHANGE_CONFIRMED", conflicting_ids=["REQ-003"], change_by_name="Priya Nair",
-                                 change_by_role="Product Owner", change_statement="Yes, change it to 8."), "REQUIREMENT_UPDATE_REQUIRED")
+                                 conflict_status="CHANGE_CONFIRMED", conflicting_ids=["LIB-003"]), "IDENTITY_REQUIRED",
+                         "the person authorising the change must be named")
         out = gapmod.resolve(p, "GAP-004", a["answer_id"], "Limit is 8 books.", "Priya Nair", "Product Owner", "Owner authorised a limit change.",
-                             "Yes, close it.", conflict_status="CHANGE_CONFIRMED", conflicting_ids=["REQ-003"], change_by_name="Priya Nair",
-                             change_by_role="Product Owner", change_statement="Yes, change the limit to 8.",
-                             requirement_updates={"REQ-003": {"statement": "A member may borrow at most 8 books at the same time."}})
-        r = p.requirement("REQ-003")
-        self.assertEqual(r["version"], 2)
-        self.assertIn("at most 5", r["versions"][0]["statement"], "prior version preserved")
-        self.assertIn("at most 8", r["statement"])
-        self.assertIn(out["decision_id"], r["related_decision_ids"])
+                             "Yes, close it.", conflict_status="CHANGE_CONFIRMED", conflicting_ids=["LIB-003"], change_by_name="Priya Nair",
+                             change_by_role="Product Owner", change_statement="Yes, change the limit to 8.")
+        self.assertEqual(out["upstream_change_required"], [key("LIB-003")])
         d = p.decisions()[out["decision_id"]]
         self.assertEqual(d["validation_status"], "CHANGE_CONFIRMED")
         self.assertEqual(d["change_authorization"]["name"], "Priya Nair")
-        self.assertTrue(p.baseline_manifest()["stale"])
-        self.assertFalse(p.state["gap_analysis_complete"])
-        self.assertIn(p.state["stage"], ("GAP_ANALYSIS", "WAITING_FOR_GAP_INPUT"))
-        approved = p.read_json("stories/approved/json/US-003.json")
-        self.assertTrue(approved["impact_review"]["pending"], "approved story linked to the changed requirement must be flagged")
-        self.assertEqual(code_of(stories.approve, p, "US-002", 1, "approve"), "BASELINE_STALE")
-        self.assertIn("US-003", checks.status_report(p)["stories"]["flagged_for_impact_review"])
+        self.assertIn(key("LIB-003"), d["related_artifact_ids"])
+        self.assertEqual({f.name: f.read_bytes() for f in self.src.iterdir() if f.is_file()}, before, "the supplied files are never edited")
+        approved = p.read_json(f"acceptance/approved/{projmod.ac_fname(key('LIB-003'))}.json")
+        self.assertTrue(approved["impact_review"]["pending"], "approved criteria linked to the contradicted requirement must be flagged")
+        self.assertIn("Confirmed change", approved["impact_review"]["reason"])
+        self.assertIn(key("LIB-003"), checks.status_report(p)["acceptance"]["flagged_for_impact_review"])
+        self.assertEqual([e["req_keys"] for e in p.audit_events() if e["event_type"] == "UPSTREAM_CHANGE_REQUIRED"], [[key("LIB-003")]])
 
     def test_change_to_prior_decision_supersedes_and_reopens_gap(self):
         p = self.with_gaps()
@@ -300,7 +373,7 @@ class ConflictTests(BATest):
         gapmod.next_gaps(p, 3)
         first = self.answer_and_resolve(p, "GAP-003", "Reject the 6th borrow", "A 6th borrow is rejected with a message.")
         gapmod.add_gaps(p, [dict(self.gap_items()[2], title="Over limit review", question="Should the 6th borrow go to a waiting list instead?",
-                                 priority="HIGH", priority_rationale="Alters earlier decision.", impacted_requirement_ids=["REQ-003"])])
+                                 priority="HIGH", priority_rationale="Alters earlier decision.", impacted_req_keys=["LIB-003"])])
         gapmod.next_gaps(p, 5)
         a = gapmod.record_answer(p, "GAP-004", "Instead of rejecting, put the member on a waiting list.")
         out = gapmod.resolve(p, "GAP-004", a["answer_id"], "6th borrow request is placed on a waiting list.", "Priya Nair", "Product Owner",

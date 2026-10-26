@@ -1,5 +1,20 @@
 # Test report
 
+## 2.0.0 (2026-10-26)
+
+The 2.0.0 suite is rewritten for the requirements-folder design (new packages for the document model, the enriched-copy render, multi-file requirements, source changes and the criteria flow; the gap, carry-forward, triage, resume, layout, schema, state-transition, cowork and context suites ported). The result and counts are recorded here once the full suite is green:
+
+| Item | Result |
+|---|---|
+| `python -m unittest discover -s tests -t .` | 481 tests, OK (1 skipped: symlink test, not runnable on this Windows setup), 240 s, Python 3.14.8, Windows 10 |
+| `claude plugin validate .` and `..` (marketplace) | pass (warnings: no LICENSE, no icon) |
+| Live Claude Code session of the 2.0.0 commands | not run |
+| Claude Cowork | not run |
+
+Everything below this line is the **1.x history** (BRD / baseline / user-story pipeline) and describes a different plugin surface; it is kept for the record and is not a statement about 2.0.0.
+
+---
+
 **Date:** 2026-10-22 (IST) · **Environment:** Windows 10 Pro 10.0.19045, Python 3.14.8, Claude Code CLI 2.1.308, Git Bash + PowerShell.
 **Not available / not run:** Claude Cowork, claude.ai chat, macOS/Linux, Python < 3.14 (see "Tests not run").
 

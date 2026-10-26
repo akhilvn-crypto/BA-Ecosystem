@@ -13,24 +13,23 @@ import sys
 import traceback
 from pathlib import Path
 
-from . import adr, convert as convmod, discover, helptext, overview, baseline as basemod, changes as changemod, checks, gaps as gapmod, ingest, reqs as reqmod, snapshots, stories as storymod, sync
+from . import acs as acmod, adr, changes as changemod, checks, discover, docsync, gaps as gapmod, helptext, overview, reqindex, snapshots, sync
 from .project import Project
 from .util import BAError, human_ist, sha256_file
 
 TRUE = {"1", "true", "yes", "y", "on"}
 
 # Commands that write downstream artifacts (or present them to the user): a change check runs first and they refuse to
-# continue while a detected change has not been shown to the user and applied. `changes`, `source accept`, `req confirm`,
-# `req remove`, `story confirm-unaffected`, `story restore|revert-edit`, `recover`, `validate`, `status` are never blocked.
-GUARDED = {("req", "add"), ("req", "commit"), ("gaps", "add"), ("gaps", "commit"), ("gaps", "next"), ("gap", "resolve"),
-           ("baseline", "create"), ("baseline", "confirm"), ("story", "add"), ("story", "next"), ("story", "approve"), ("story", "edit")}
+# continue while a detected change has not been shown to the user and applied. `changes`, `ac confirm-unaffected`,
+# `ac restore|revert-edit|archive`, `doc`, `recover`, `validate`, `status` are never blocked.
+GUARDED = {("gaps", "add"), ("gaps", "commit"), ("gaps", "next"), ("gap", "resolve"), ("ac", "add"), ("ac", "next"), ("ac", "approve"),
+           ("ac", "edit")}
 # Read-only listings: the check still runs (and is recorded) first, and its result is attached to the output.
-CHECKED = {("gaps", "triage"), ("story", "triage"), ("complete", None), ("report", None)}
-
+CHECKED = {("gaps", "triage"), ("ac", "triage"), ("complete", None), ("report", None)}
 
 # Collections a caller always expects to find, even when empty; every other empty value is dropped from the output.
 # `candidate_conflicts` stays explicit so "checked, none found" is never confused with "field missing".
-KEEP_EMPTY = {"gaps", "stories", "changes", "requirements", "outstanding", "errors", "results", "candidate_conflicts"}
+KEEP_EMPTY = {"gaps", "acs", "changes", "requirements", "outstanding", "errors", "results", "candidate_conflicts"}
 
 
 def prune(o, top=False):
@@ -108,29 +107,25 @@ def build_parser() -> argparse.ArgumentParser:
     t = sub.add_parser("trace"); t.add_argument("--write", action="store_true")
     sub.add_parser("recover")
     sub.add_parser("files")
-    cv = sub.add_parser("convert"); cv.add_argument("--in", dest="src", required=True); cv.add_argument("--out")
     hp = sub.add_parser("help"); hp.add_argument("topic", nargs="?"); hp.add_argument("what", nargs="?")
     fd = sub.add_parser("find"); fd.add_argument("--dir", help="folder to look in (default: --root, else the current folder)")
     sub.add_parser("complete")
     sub.add_parser("report")
     f = sub.add_parser("fingerprint"); f.add_argument("file")
     i = sub.add_parser("init")
-    i.add_argument("--brd", required=True); i.add_argument("--name"); i.add_argument("--copy-source", action="store_true")
+    i.add_argument("--requirements", required=True, help="a folder of .md requirement files, or one .md file"); i.add_argument("--name")
+    i.add_argument("--copy-source", action="store_true"); i.add_argument("--recursive", action="store_true")
+    i.add_argument("--locator", help="regular expression for a requirement ID if the default (REQ-012, FR-2.1, AUTH-004 ...) does not fit")
+    i.add_argument("--enriched-dir", help="write the enriched copies here instead of <project>/enriched (never inside the requirements folder)")
     i.add_argument("--delegate-above", type=int); i.add_argument("--batch-chars", type=int)
 
-    grp("source", {"check": [opt("--no-record", action="store_true")],
-                   "accept": [opt("--by-name"), opt("--by-role"), opt("--statement")],
-                   "section": [pos("section_id"), opt("--allow-changed", action="store_true")],
-                   "outline": [opt("--delegate-above", type=int), opt("--batch-chars", type=int)], "history": []})
+    grp("source", {"index": [opt("--delegate-above", type=int), opt("--batch-chars", type=int)], "check": [opt("--no-record", action="store_true")],
+                   "history": []})
     grp("changes", {"check": [opt("--no-record", action="store_true")],
                     "apply": [opt("--id"), opt("--by-name"), opt("--by-role"), opt("--statement")],
                     "list": [opt("--status")], "show": [pos("id")], "status": [],
                     "dismiss": [pos("id"), opt("--item"), opt("--reason"), opt("--by-name"), opt("--by-role")]})
-    grp("req", {"add": [opt("--file")], "commit": [], "pairs": [], "list": [opt("--status")], "show": [pos("id")],
-                "update": [pos("id"), opt("--file"), opt("--reason"), opt("--reason-file"), opt("--cause", default="decision"),
-                          opt("--decision-id"), opt("--by-name"), opt("--by-role")],
-                "confirm": [pos("id"), opt("--note")],
-                "remove": [pos("id"), opt("--reason"), opt("--by-name"), opt("--by-role")]})
+    grp("req", {"list": [opt("--status")], "show": [pos("key")], "pairs": []})
     grp("owner", {"set": [opt("--name"), opt("--role"), opt("--gap"), opt("--statement")],
                   "unknown": [opt("--choice", default="pause")], "show": []})
     grp("gaps", {"add": [opt("--file")], "commit": [opt("--cross-pass-done", action="store_true")],
@@ -141,7 +136,7 @@ def build_parser() -> argparse.ArgumentParser:
                     opt("--closed-by-role"), opt("--closure-summary"), opt("--confirmation"), opt("--confirmation-file"),
                     opt("--conflict-status", default="PASSED"), opt("--conflicting"), opt("--reviewed"),
                     opt("--change-by-name"), opt("--change-by-role"), opt("--change-statement"),
-                    opt("--requirement-updates"), opt("--owner-confirmation")]
+                    opt("--owner-confirmation")]
     grp("gap", {"show": [pos("id")],
                 "answer": [pos("id"), opt("--response"), opt("--response-file"), opt("--respondent-name"), opt("--respondent-role"),
                            opt("--use-suggestion", action="store_true")],
@@ -156,20 +151,19 @@ def build_parser() -> argparse.ArgumentParser:
                 "keep": [pos("id")]})
     grp("policy", {"set": [opt("--carry-forward"), opt("--deferral-revisit-required"), opt("--by-name"), opt("--by-role"),
                            opt("--statement")]})
-    grp("baseline", {"create": [opt("--summary")],
-                     "confirm": [opt("--version", type=int), opt("--by-name"), opt("--by-role"), opt("--statement")],
-                     "show": [opt("--version", type=int)]})
-    grp("story", {"add": [opt("--file")], "show": [pos("id")], "gaps": [opt("--requirements")], "triage": [], "keep": [pos("id")],
-                  "next": [opt("--id"), opt("--deferred", action="store_true"), opt("--unapproved", action="store_true"), opt("--batch", type=int, default=1),
-                           opt("--full", action="store_true"), opt("--fallback", action="store_true")],
-                  "approve": [pos("id"), opt("--version", type=int), opt("--statement"), opt("--approver-name"), opt("--approver-role")],
-                  "edit": [pos("id"), opt("--file"), opt("--reason")],
-                  "defer": [pos("id"), opt("--version", type=int), opt("--reason")], "revisit": [pos("id")],
-                  "history": [pos("id")],
-                  "restore": [pos("id"), opt("--reason"), opt("--by-name"), opt("--by-role")],
-                  "revert-edit": [pos("id"), opt("--reason"), opt("--by-name"), opt("--by-role")],
-                  "request-changes": [pos("id"), opt("--version", type=int), opt("--note")],
-                  "confirm-unaffected": [pos("id"), opt("--statement"), opt("--by-name"), opt("--by-role")]})
+    grp("ac", {"add": [opt("--file")], "show": [pos("key")], "gaps": [opt("--requirements")], "triage": [], "keep": [pos("key")],
+               "next": [opt("--key"), opt("--deferred", action="store_true"), opt("--unapproved", action="store_true"), opt("--batch", type=int, default=1),
+                        opt("--full", action="store_true"), opt("--fallback", action="store_true")],
+               "approve": [pos("key"), opt("--version", type=int), opt("--statement"), opt("--approver-name"), opt("--approver-role")],
+               "edit": [pos("key"), opt("--file"), opt("--reason")],
+               "defer": [pos("key"), opt("--version", type=int), opt("--reason")], "revisit": [pos("key")],
+               "history": [pos("key")],
+               "restore": [pos("key"), opt("--reason"), opt("--by-name"), opt("--by-role")],
+               "revert-edit": [pos("key"), opt("--reason"), opt("--by-name"), opt("--by-role")],
+               "archive": [pos("key"), opt("--reason"), opt("--by-name"), opt("--by-role")],
+               "request-changes": [pos("key"), opt("--version", type=int), opt("--note")],
+               "confirm-unaffected": [pos("key"), opt("--statement"), opt("--by-name"), opt("--by-role")]})
+    grp("doc", {"sync": [opt("--key"), opt("--force", action="store_true")], "check": []})
     return ap
 
 
@@ -196,7 +190,7 @@ def _open(a) -> Project:
 
 
 # Actions that only read; every other command may have written files and so reports where they now are.
-READ_ONLY = {"show", "list", "pairs", "outline", "history", "triage", "next", "gaps", "check", "status", "explain"}
+READ_ONLY = {"show", "list", "pairs", "index", "history", "triage", "next", "gaps", "check", "status", "explain"}
 
 
 def run(a) -> dict | str:
@@ -213,21 +207,31 @@ def run(a) -> dict | str:
 
 
 def _finish(a, p, out) -> dict | str:
-    if p is not None and a.group not in ("status", "validate", "trace", "files", "manifest", "bridge") and getattr(a, "action", None) not in READ_ONLY:
+    writing = a.group not in ("status", "validate", "trace", "files", "manifest", "bridge") and getattr(a, "action", None) not in READ_ONLY
+    if p is not None and writing:
+        p.sync_docs()  # the enriched copies follow every state change (never overwriting a hand edit: that waits for `changes check`)
         adr.refresh(p)  # ADR-LOG.md at the top of every artifact folder: who decided / approved what, when (IST)
         overview.refresh(p)  # START-HERE.md: where everything is and where the project stands
     if p is not None and a.group not in ("status", "validate", "trace"):
         done = changemod.reconcile(p)  # close change items whose underlying work is now complete
         if done and isinstance(out, dict):
             out["changes_reconciled"] = done
-    if p is not None and isinstance(out, dict) and a.group not in ("status", "validate", "trace", "files")             and getattr(a, "action", None) not in READ_ONLY:
+    if p is not None and isinstance(out, dict) and a.group not in ("status", "validate", "trace", "files") and getattr(a, "action", None) not in READ_ONLY:
         saved = p.receipt(since=getattr(a, "_before", None))  # proof of what this command wrote and where to open it
         if saved:
             out["files_saved"] = saved
+        if p.doc_warnings:
+            out["enriched_copy_warnings"] = list(dict.fromkeys(p.doc_warnings))
         gid = getattr(a, "id", None) if a.group == "gap" else None
         if gid and p._has_register() and any(g["gap_id"] == gid for g in p.gaps()):
             out["gap_file"] = p.gap_location(gid)  # where the gap lives now: it moves between open/deferred/resolved
     return out
+
+
+def _legacy_status(a, e: BAError):
+    d = e.details
+    return None, {"legacy_project": True, "project_id": d.get("project_id"), "stage": d.get("stage"), "schema_version": d.get("schema_version"),
+                  "message": e.message}
 
 
 def _run(a):
@@ -241,24 +245,31 @@ def _run(a):
         return None, discover.find(a.dir or a.root)
     if g == "help":
         return None, helptext.render(build_parser(), a.topic, a.what)
-    if g == "convert":
-        return None, convmod.convert(a.root or os.environ.get("BA_PROJECT_ROOT"), a.src, a.out)
     if g == "init":
         if not a.root:
             raise BAError("NO_PROJECT", "init requires --root <project folder> explicitly confirmed by the user.")
-        p = Project.create(a.root, a.brd, a.name, a.copy_source)
+        p = Project.create(a.root, a.requirements, a.name, a.copy_source, a.recursive, a.locator, a.enriched_dir)
         adr.refresh(p)
         overview.refresh(p)
-        meta = p.source_metadata()
+        rep = p.index_report
+        ents = p.requirements()
         return None, {"project_root": str(p.root), "project_id": p.state["project_id"], "stage": p.state["stage"],
-                "source": {"format": meta["format"], "fingerprint": meta["fingerprint"], "sections": len(meta["sections"]),
-                           "parser": meta["parser"]},
-                "warnings": meta["warnings"], "instruction_like_lines": len(meta["injection_suspects"]),
-                **ingest.outline_batches(p.load_source(verify=False), a.delegate_above, a.batch_chars),
-                "next": "Decompose the BRD into atomic requirements (`req add`). If `delegate` is true, ask the user once whether to use "
-                        "`ba-agent:requirement-analyst` helpers (one per batch, in parallel); if they decline or the Agent tool is not "
-                        "allowed, read the batches one section at a time here (`source section`)."}
-    p = _open(a)
+                      "source": {"path": p.state["source"]["path"], "kind": p.state["source"]["kind"], "files": len({e["file"] for e in ents}),
+                                 "requirements": len(ents), "fingerprint": p.state["source"]["fingerprint"],
+                                 "id_pattern": p.state["source"]["locator"]["id_pattern"]},
+                      "enriched_folder": str(p.enriched_root), "warnings": rep["warnings"], "skipped": rep["skipped"],
+                      "instruction_like_lines": rep["instruction_like_lines"],
+                      **reqindex.outline_batches(p, a.delegate_above, a.batch_chars),
+                      "next": "Run gap analysis: read each requirement (`req show <key>`), add evidence-based gaps (`gaps add`), run the "
+                              "cross-requirement pass (`req pairs`), then `gaps commit --cross-pass-done`. If `delegate` is true, ask the "
+                              "user once whether to use `ba-agent:gap-analyst` helpers (one per batch, in parallel); if they decline or the "
+                              "Agent tool is not allowed, read the batches one requirement at a time here."}
+    try:
+        p = _open(a)
+    except BAError as e:
+        if e.code == "LEGACY_PROJECT" and g == "status":
+            return _legacy_status(a, e)
+        raise
     a._before = p._dir_sig()
     key = (g, act if (g, act) in GUARDED or (g, act) in CHECKED else None)
     checked = None
@@ -289,14 +300,16 @@ def _dispatch(a, p, g, act):
     if g == "recover":
         return checks.recover(p)
     if g == "files":
-        return {"project_folder": str(p.root), "stage": p.state["stage"], "folders": p.receipt(),
-                "note": "Each folder keeps readable copies in md/ and machine records in json/. Tell the user these paths."}
+        return {"project_folder": str(p.root), "stage": p.state["stage"], "enriched_folder": str(p.enriched_root), "folders": p.receipt(),
+                "note": "Each folder keeps readable copies in md/ and machine records in json/; the enriched copies are in enriched/. Tell the user these paths."}
     if g == "complete":
         r = checks.complete_workflow(p)
         r.pop("summary", None)
         return r
     if g == "report":
         return checks.write_summary(p)
+    if g == "doc":
+        return docsync.check(p) if act == "check" else docsync.sync(p, a.key, a.force)
     if g == "changes":
         if act == "check":
             return changemod.check(p, not a.no_record, "changes check")
@@ -312,32 +325,26 @@ def _dispatch(a, p, g, act):
     if g == "source":
         if act == "check":  # detect + explain only; `changes apply` is what touches downstream artifacts
             return changemod.check(p, not a.no_record, "source check")
-        if act == "accept":
-            return reqmod.source_accept(p, a.by_name, a.by_role, a.statement)
-        if act == "section":
-            return reqmod.source_section(p, a.section_id, a.allow_changed)
         if act == "history":
             return snapshots.index(p)
-        return ingest.outline_batches(p.load_source(verify=False), a.delegate_above, a.batch_chars)
+        doc = reqindex.load(p)
+        return {"files": {r: {"requirements": f["units"], "mode": f["mode"], "status": f["status"]} for r, f in doc["files"].items()},
+                "requirements": len(p.requirements()), "id_pattern": p.state["source"]["locator"]["id_pattern"],
+                **reqindex.outline_batches(p, a.delegate_above, a.batch_chars)}
     if g == "req":
-        if act == "add":
-            return reqmod.add_requirements(p, _json_file(a.file))
-        if act == "commit":
-            return reqmod.commit_requirements(p)
         if act == "pairs":
-            return reqmod.pairs_report(p)
+            return reqindex.pairs_report(p)
         if act == "list":
-            rs = [r for r in p.requirements() if not a.status or r["status"] == a.status]
-            return {"requirements": [{k: r[k] for k in ("requirement_id", "title", "statement", "type", "status", "version", "source_reference")} for r in rs]}
-        if act == "show":
-            return p.requirement(a.id)
-        if act == "update":
-            return reqmod.update_requirement(p, a.id, _json_file(a.file),
-                                             _text(a, "reason"), a.cause, a.decision_id, a.by_name, a.by_role)
-        if act == "confirm":
-            return reqmod.confirm_requirement(p, a.id, a.note)
-        if act == "remove":
-            return reqmod.remove_requirement(p, a.id, a.reason, a.by_name, a.by_role)
+            rows = [r for r in checks.requirement_rows(p) if not a.status or r["status"] == a.status.upper()]
+            return {"requirements": rows}
+        key = p.req_key(a.key)
+        v = reqindex.view(p, key)
+        v["status"] = docsync.requirement_status(p, key) if v["status"] == "ACTIVE" else v["status"]
+        v["gaps"] = [{"gap_id": x["gap_id"], "priority": x["priority"], "status": x["status"], "title": x["title"]}
+                     for x in p.gaps() if key in x["impacted_req_keys"] and x["status"] != "RESOLVED"]
+        v["decisions"] = sorted(d["decision_id"] for d in p.decisions().values() if d["current_status"] == "ACTIVE" and key in d.get("related_artifact_ids", []))
+        v["acceptance_criteria"] = acmod.ac_states(p).get(key)
+        return v
     if g == "owner":
         if act == "set":
             return gapmod.set_owner(p, a.name, a.role, a.gap, a.statement)
@@ -356,8 +363,9 @@ def _dispatch(a, p, g, act):
             return gapmod.triage(p, a.status)
         if act == "carry-forward-all":
             return gapmod.carry_forward_all(p, a.by_name, a.by_role, _text(a, "reason"))
-        return {"gaps": [dict({k: x[k] for k in ("gap_id", "category", "priority", "status", "title", "impacted_requirement_ids", "decision_id")},
-                              carried_forward=bool(x.get("carry_forward")))
+        labels = reqindex.labels(p)
+        return {"gaps": [dict({k: x[k] for k in ("gap_id", "category", "priority", "status", "title", "decision_id")},
+                              requirements=[labels.get(k, k) for k in x["impacted_req_keys"]], carried_forward=bool(x.get("carry_forward")))
                          for x in p.gaps() if not a.status or x["status"] == a.status]}
     if g == "gap":
         if act == "show":
@@ -373,12 +381,10 @@ def _dispatch(a, p, g, act):
         if act == "conflict":
             return gapmod.record_conflict(p, a.id, a.answer_id, _csv(a.with_ids), a.description)
         if act == "resolve":
-            ru = a.requirement_updates
-            ru = _json_file(ru) if isinstance(ru, str) else (ru or {})
             return gapmod.resolve(
                 p, a.id, a.answer_id, _text(a, "interpretation"), a.closed_by_name, a.closed_by_role, a.closure_summary,
                 _text(a, "confirmation"), a.conflict_status, _csv(a.conflicting), _csv(a.reviewed), a.change_by_name,
-                a.change_by_role, a.change_statement, ru, a.owner_confirmation)
+                a.change_by_role, a.change_statement, a.owner_confirmation)
         if act == "defer":
             return gapmod.defer(p, a.id, _text(a, "reason"), a.owner, a.revisit_by, a.by_name, a.by_role)
         if act in ("answer-later", "skip"):
@@ -393,46 +399,39 @@ def _dispatch(a, p, g, act):
         cf = None if a.carry_forward is None else str(a.carry_forward).lower() in TRUE
         dr = None if a.deferral_revisit_required is None else [x.upper() for x in _csv(a.deferral_revisit_required) if x.lower() != "none"]
         return gapmod.set_policy(p, cf, a.by_name, a.by_role, a.statement, dr)
-    if g == "baseline":
-        if act == "create":
-            return basemod.create(p, a.summary)
-        if act == "confirm":
-            return basemod.confirm(p, a.version, a.by_name, a.by_role, a.statement)
-        v = a.version or p.state["baseline_version"] or (p.baseline_manifest()["versions"][-1]["version"] if p.baseline_manifest()["versions"] else None)
-        if v is None:
-            raise BAError("UNKNOWN_BASELINE", "No baseline exists yet.")
-        return p.read_json(f"baselines/baseline-v{v}.json")
-    if g == "story":
+    if g == "ac":
         if act == "add":
-            return storymod.add_stories(p, _json_file(a.file))
+            return acmod.add_acs(p, _json_file(a.file))
         if act == "next":
-            return storymod.next_story(p, a.id, a.deferred, a.batch, a.unapproved, a.full, a.fallback)
+            return acmod.next_ac(p, a.key, a.deferred, a.batch, a.unapproved, a.full, a.fallback)
         if act == "show":
-            return storymod._load(p, a.id)[1]
+            return acmod._load(p, a.key)[1]
         if act == "triage":
-            return storymod.triage(p)
+            return acmod.triage(p)
         if act == "keep":
-            return storymod.keep(p, a.id)
+            return acmod.keep(p, a.key)
         if act == "gaps":
-            return storymod.gap_context(p, _csv(a.requirements))
+            return acmod.gap_context(p, _csv(a.requirements))
         if act == "approve":
-            return storymod.approve(p, a.id, a.version, a.statement, a.approver_name, a.approver_role)
+            return acmod.approve(p, a.key, a.version, a.statement, a.approver_name, a.approver_role)
         if act == "edit":
-            return storymod.edit(p, a.id, _json_file(a.file), a.reason)
+            return acmod.edit(p, a.key, _json_file(a.file), a.reason)
         if act == "defer":
-            return storymod.defer(p, a.id, a.version, a.reason)
+            return acmod.defer(p, a.key, a.version, a.reason)
         if act == "revisit":
-            return storymod.revisit(p, a.id)
+            return acmod.revisit(p, a.key)
         if act == "request-changes":
-            return storymod.request_changes(p, a.id, a.version, a.note)
+            return acmod.request_changes(p, a.key, a.version, a.note)
         if act == "confirm-unaffected":
-            return storymod.confirm_unaffected(p, a.id, a.statement, a.by_name, a.by_role)
+            return acmod.confirm_unaffected(p, a.key, a.statement, a.by_name, a.by_role)
+        if act == "archive":
+            return acmod.archive(p, a.key, a.reason, a.by_name, a.by_role)
         if act == "history":
-            return changemod.story_history(p, a.id)
+            return changemod.ac_history(p, a.key)
         if act == "restore":
-            return changemod.restore_story(p, a.id, a.reason, a.by_name, a.by_role)
+            return changemod.restore_ac(p, a.key, a.reason, a.by_name, a.by_role)
         if act == "revert-edit":
-            return changemod.revert_edit(p, a.id, a.reason, a.by_name, a.by_role)
+            return changemod.revert_edit(p, a.key, a.reason, a.by_name, a.by_role)
     raise BAError("USAGE", f"Unhandled command {g} {act}")
 
 

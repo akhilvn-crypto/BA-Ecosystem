@@ -1,6 +1,6 @@
 """R4: a command that moves a record must leave the user's folder as a full run would, even from a lean staged copy.
 
-The lean copy has no `md/` views (except approved stories), so the old view of a moved gap or story is not in the workspace to be
+The lean copy has no `md/` views, so the old view of a moved gap or acceptance-criteria record is not in the workspace to be
 noticed as removed. The user's side is simulated by applying `changed_files` / `removed_files` to a full copy of the project."""
 import shutil
 
@@ -37,15 +37,20 @@ class LeanMoveTests(BATest):
         self.assertEqual(sorted(theirs - full), [], "stale files left on the user's side")
         self.assertEqual(sorted(full - theirs), [], "files a full run writes never reached the user")
 
-    def test_story_approve_from_a_lean_copy(self):
-        p = self.to_stories()
-        ba(p.root, "story", "next", "--id", "US-001")
-        self.assert_user_side_matches_a_full_run(p, "story", "approve", "US-001", "--version", "1", "--statement", "Approved, it reads correctly.")
+    def test_ac_approve_from_a_lean_copy(self):
+        p = self.to_acs(2)
+        ba(p.root, "ac", "next", "--key", "LIB-001")
+        self.assert_user_side_matches_a_full_run(p, "ac", "approve", "LIB-001", "--version", "1", "--statement", "Approved, it reads correctly.")
 
-    def test_story_defer_from_a_lean_copy(self):
-        p = self.to_stories()
-        ba(p.root, "story", "next", "--id", "US-001")
-        self.assert_user_side_matches_a_full_run(p, "story", "defer", "US-001", "--version", "1", "--reason", "Waiting for the vendor")
+    def test_ac_defer_from_a_lean_copy(self):
+        p = self.to_acs(2)
+        ba(p.root, "ac", "next", "--key", "LIB-001")
+        self.assert_user_side_matches_a_full_run(p, "ac", "defer", "LIB-001", "--version", "1", "--reason", "Waiting for the vendor")
+
+    def test_ac_request_changes_from_a_lean_copy(self):
+        p = self.to_acs(2)
+        ba(p.root, "ac", "next", "--key", "LIB-001")
+        self.assert_user_side_matches_a_full_run(p, "ac", "request-changes", "LIB-001", "--version", "1", "--note", "Needs a negative case")
 
     def test_gap_defer_from_a_lean_copy(self):
         p = self.with_gaps()

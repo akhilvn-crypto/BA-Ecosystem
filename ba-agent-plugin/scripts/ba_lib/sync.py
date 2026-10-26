@@ -14,8 +14,7 @@ from pathlib import Path
 
 from .util import atomic_write_text, canonical_json, read_json
 
-MANAGED = ("state", "reports", "snapshots", "source", "extracted", "atomic-requirements", "requirements", "decisions", "baselines",
-           "changes", "gaps", "stories")
+MANAGED = ("state", "reports", "snapshots", "source", "index", "decisions", "changes", "gaps", "acceptance", "enriched")
 TOP_FILES = ("START-HERE.md", "ADR-LOG.md")
 MANIFEST = "state/manifest.json"
 PROBE = "state/.write-probe"
@@ -39,13 +38,11 @@ def _walk(root: Path):
 
 def _stage(rel: str) -> bool:
     """Does a session need this file staged? The core reads records (`json/`) and state, never the generated `md/` views, and the
-    approved stories' `md/` are the user-editable copies that `changes check` compares. Those same files are what `manifest` hashes."""
+    enriched copies are the user-editable files that `changes check` compares. Those same files are what `manifest` hashes."""
     parts = rel.split("/")
     if parts[-1] in TOP_FILES:  # generated views, rewritten by every writing command
         return False
-    if parts[0] in ("state", "snapshots", "source", "extracted") or "json" in parts[:-1]:
-        return True
-    return rel.startswith("stories/approved/md/")
+    return parts[0] in ("state", "snapshots", "source", "enriched") or "json" in parts[:-1]
 
 
 def _rel(root: Path, f: Path) -> str:
@@ -111,8 +108,9 @@ def stage_list(root) -> dict:
     root = Path(root)
     files = sorted(r for r in (_rel(root, f) for f in _walk(root)) if _stage(r) and r != PROBE)
     return {"stage": files, "count": len(files),
-            "not_needed": "md/ views (except stories/approved/md/), reports/, START-HERE.md, ADR-LOG.md; state/backups/ and state/inbox/ are local only",
-            "also": "the BRD at state.source.original_path (take a fresh copy), and any file the user says they edited"}
+            "not_needed": "md/ views, reports/, START-HERE.md, ADR-LOG.md; state/backups/ and state/inbox/ are local only",
+            "also": "the requirement files at state.source.original_path (take a fresh copy: they are input only and never committed back), "
+                    "and any file the user says they edited; commit back only the project folder, enriched/ included"}
 
 
 def hashes(root) -> dict[str, str]:

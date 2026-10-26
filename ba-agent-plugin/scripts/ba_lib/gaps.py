@@ -7,7 +7,7 @@ import re
 import uuid
 from datetime import datetime
 
-from . import conflicts, present, reqs
+from . import conflicts, docmodel, ingest, present, reqindex
 from .project import GAP_TRANSITIONS, check_transition, fault
 from .util import (BAError, append_jsonl, atomic_write_text, ist_now_iso, normalize_ws, now_ist, read_jsonl,
                    require_identity, same_person)
@@ -97,27 +97,45 @@ def owner_unknown(p, choice: str) -> dict:
 
 # ----------------------------------------------------------------- add
 
-def _check_suggestion(sug, tag: str, reqmap: dict, decisions: dict) -> dict | None:
+def _check_suggestion(p, sug, tag: str, decisions: dict) -> dict | None:
     """A suggested answer is shown to the human only when it cites the evidence it comes from."""
     if not sug:
         return None
     if not isinstance(sug, dict) or not normalize_ws(sug.get("answer") or "") or not normalize_ws(sug.get("source") or ""):
-        raise BAError("BAD_INPUT", f"{tag}: suggested_answer needs 'answer' and 'source' (the BRD section, requirement or decision it "
+        raise BAError("BAD_INPUT", f"{tag}: suggested_answer needs 'answer' and 'source' (the requirement, document passage or decision it "
                       "is based on). Leave it out when there is no supporting evidence.")
-    cited = re.findall(r"\b(?:REQ|DEC)-\d{3,}\b", sug["source"])
-    bad = [c for c in cited if c not in reqmap and c not in decisions]
+    bad = [c for c in re.findall(r"\bDEC-\d{3,}\b", sug["source"]) if c not in decisions]
+    ids = {e["id"] for e in p.requirements(False)}
+    prefixes = {m.group(1) for i in ids if (m := re.match(r"(.*-)\d", i))}
+    for tok in re.findall(docmodel.DEFAULT_ID_PATTERN, sug["source"]):
+        m = re.match(r"(.*-)\d", tok)
+        if m and m.group(1) in prefixes and tok not in ids:
+            bad.append(tok)
     if bad:
         raise BAError("UNKNOWN_REQUIREMENT", f"{tag}: suggested_answer cites unknown artifact(s) {bad}")
     return {"answer": normalize_ws(sug["answer"]), "source": normalize_ws(sug["source"])}
 
 
+def _keys(p, refs, tag: str) -> list[str]:
+    """Requirement references (a full key, or a bare ID that is unique in the folder) -> full keys of ACTIVE requirements."""
+    if not isinstance(refs, list) or not refs:
+        raise BAError("BAD_INPUT", f"{tag}: impacted_req_keys must be a non-empty list of requirement keys (see `req list`).")
+    out = []
+    for r in refs:
+        try:
+            out.append(p.req_key(r, active_only=True))
+        except BAError as e:
+            raise BAError(e.code, f"{tag}: {e.message}")
+    return list(dict.fromkeys(out))
+
+
 def add_gaps(p, items: list[dict]) -> dict:
     st = p.state
-    if st["stage"] in ("INITIALIZED", "BRD_PARSED", "PAUSED", "BLOCKED"):
-        raise BAError("INVALID_STAGE", f"Gaps can be added once requirements are ready; stage is {st['stage']}.")
+    if st["stage"] in ("INITIALIZED", "PAUSED", "BLOCKED"):
+        raise BAError("INVALID_STAGE", f"Gaps can be added once the requirements are indexed; stage is {st['stage']}.")
     if not isinstance(items, list) or not items:
         raise BAError("BAD_INPUT", "Provide a non-empty JSON list of gaps.")
-    reqmap = {r["requirement_id"]: r for r in p.requirements()}
+    texts = reqindex.texts(p)
     gaps = p.gaps()
     ids = [g["gap_id"] for g in gaps]
     owner = st.get("decision_owner")
@@ -127,18 +145,19 @@ def add_gaps(p, items: list[dict]) -> dict:
     for n, it in enumerate(items):
         tag = f"item[{n}]"
         try:
-            for f in ("category", "title", "description", "evidence", "why_it_matters", "question",
-                      "impacted_requirement_ids", "priority", "priority_rationale"):
+            for f in ("category", "title", "description", "evidence", "why_it_matters", "question", "priority", "priority_rationale"):
                 if not it.get(f):
                     raise BAError("BAD_INPUT", f"{tag}: '{f}' is required (priority must be justified).")
             if it["category"] not in CATEGORIES:
                 raise BAError("BAD_INPUT", f"{tag}: category must be one of {CATEGORIES}")
             if it["priority"] not in PRIORITIES:
                 raise BAError("BAD_INPUT", f"{tag}: priority must be one of {PRIORITIES}")
-            bad = [r for r in it["impacted_requirement_ids"] if r not in reqmap or reqmap[r]["status"] not in ACTIVE_REQ]
-            if bad:
-                raise BAError("UNKNOWN_REQUIREMENT", f"{tag}: unknown/inactive requirement(s) {bad}")
-            suggestion = _check_suggestion(it.get("suggested_answer"), tag, reqmap, p.decisions())
+            keys = _keys(p, it.get("impacted_req_keys") or it.get("impacted_requirement_ids"), tag)
+            quote = normalize_ws(it.get("evidence_quote") or "") or None
+            if quote and not any(ingest.excerpt_in_text(quote, texts[k]) for k in keys):
+                raise BAError("EVIDENCE_NOT_FOUND", f"{tag}: evidence_quote was not found in the text of {keys}. Quote the requirement "
+                              "verbatim; do not paraphrase (leave it out when the gap is about something the text does not say).")
+            suggestion = _check_suggestion(p, it.get("suggested_answer"), tag, p.decisions())
             qn = normalize_ws(it["question"]).lower()
             if qn in seen_q:
                 skipped.append({"item": n, "reason": "same question already open"})
@@ -148,9 +167,9 @@ def add_gaps(p, items: list[dict]) -> dict:
             ids.append(gid)
             built.append({
                 "gap_id": gid, "category": it["category"], "title": normalize_ws(it["title"]),
-                "description": it["description"].strip(), "evidence": it["evidence"].strip(),
+                "description": it["description"].strip(), "evidence": it["evidence"].strip(), "evidence_quote": quote,
                 "why_it_matters": it["why_it_matters"].strip(), "question": it["question"].strip(),
-                "impacted_requirement_ids": list(dict.fromkeys(it["impacted_requirement_ids"])),
+                "impacted_req_keys": keys,
                 "priority": it["priority"], "priority_rationale": it["priority_rationale"].strip(),
                 "material": bool(it.get("material", it["category"] == "Security and access")),
                 "status": "OPEN", "owner": it.get("owner"), "decision_owner_override": None, "resolution": None,
@@ -167,21 +186,14 @@ def add_gaps(p, items: list[dict]) -> dict:
         raise BAError("GAPS_REJECTED", "No gaps were saved: " + " | ".join(errors), errors=errors)
     if built:
         p.save_gaps(gaps + built, touched=[g["gap_id"] for g in built])
-        for g in built:
-            for rid in g["impacted_requirement_ids"]:
-                r = reqmap[rid]
-                if g["gap_id"] not in r["related_gap_ids"]:
-                    r["related_gap_ids"].append(g["gap_id"])
-                    p.save_requirement(r)
         p.audit("GAP_OPENED", gap_ids=[g["gap_id"] for g in built])
-        for g in built:  # stories that already exist for these requirements must name the new gap
-            p.flag_stories(set(g["impacted_requirement_ids"]), f"new gap {g['gap_id']} opened: declare it in the story's "
-                           "unresolved decisions and reassess readiness", "gap-opened")
+        for g in built:  # acceptance criteria that already exist for these requirements must name the new gap
+            p.flag_acs(set(g["impacted_req_keys"]), f"new gap {g['gap_id']} opened: declare it in the criteria's open gaps and "
+                       "reassess readiness", "gap-opened")
     stage = st["stage"]
-    if stage == "REQUIREMENTS_READY":
+    if stage == "SOURCE_INDEXED":
         p.set_stage("GAP_ANALYSIS", "gaps-saved")
-    elif stage in ("REQUIREMENTS_BASELINED", "STORIES_READY", "WAITING_FOR_STORY_REVIEW", "COMPLETED") and built:
-        p.mark_baseline_stale("new gaps opened")
+    elif stage in ("AC_DRAFTING", "WAITING_FOR_AC_REVIEW", "COMPLETED") and built:
         p.reopen_to("WAITING_FOR_GAP_INPUT", "new-gaps")
     else:
         p.save_state("gaps-saved")
@@ -193,12 +205,10 @@ def commit_analysis(p, cross_pass_done: bool) -> dict:
         raise BAError("CROSS_PASS_REQUIRED", "Run the cross-requirement pass (`req pairs` + contradiction/dependency review) "
                       "and pass --cross-pass-done to confirm.")
     st = p.state
-    if st["stage"] == "REQUIREMENTS_READY":
+    if st["stage"] == "SOURCE_INDEXED":
         p.set_stage("GAP_ANALYSIS", "gap-analysis-started")
     if p.state["stage"] not in ("GAP_ANALYSIS", "WAITING_FOR_GAP_INPUT"):
         raise BAError("INVALID_STAGE", f"Cannot commit gap analysis from {p.state['stage']}.")
-    if any(r["status"] == "NEEDS_REVIEW" for r in p.requirements()):
-        raise BAError("IMPACT_REVIEW_INCOMPLETE", "Some requirements still need review after a source change.")
     p.state["gap_analysis_complete"] = True
     p.audit("GAP_ANALYSIS_COMPLETED", gap_count=len(p.gaps()), cross_pass=True)
     gaps_all = p.gaps()  # re-running the analysis is the reassessment that a requirement change asked for
@@ -219,9 +229,17 @@ def commit_analysis(p, cross_pass_done: bool) -> dict:
 
 # -------------------------------------------------------------- triage
 
-def _story_ids_for(p, g: dict) -> list[str]:
-    """Stories (any folder) that link to a requirement this gap affects."""
-    return sorted({s["story_id"] for _, s in p.all_stories() if set(s["requirement_ids"]) & set(g["impacted_requirement_ids"])})
+def _ac_keys_for(p, g: dict) -> list[str]:
+    """Requirements (with an acceptance-criteria record in any folder) that this gap affects."""
+    return sorted({a["req_key"] for _, a in p.all_acs() if a["req_key"] in g["impacted_req_keys"]})
+
+
+def _reqmap(p) -> dict:
+    """req_key -> what a person needs to see of the requirement: short label, title, text and where it is in the document."""
+    tx, labels = reqindex.texts(p), reqindex.labels(p)
+    return {e["req_key"]: {"requirement_id": labels[e["req_key"]], "req_key": e["req_key"], "title": e["title"],
+                           "statement": tx.get(e["req_key"], ""), "source_reference": f"{e['file']} lines {e['line_start']}–{e['line_end']}",
+                           "status": e["status"]} for e in p.requirements(False) if e["status"] == "ACTIVE"}
 
 
 def _explanation(p, g: dict, reqmap: dict) -> dict:
@@ -229,14 +247,15 @@ def _explanation(p, g: dict, reqmap: dict) -> dict:
     blocker = carry_forward_blocker(p, g)
     return {
         "what_we_are_asking": g["question"], "missing_information": g["description"], "evidence": g["evidence"],
+        "evidence_quote": g.get("evidence_quote"),
         "why_it_matters": g["why_it_matters"], "priority": g["priority"], "priority_rationale": g.get("priority_rationale"),
-        "impact_on_requirements": [{"id": r, "title": reqmap[r]["title"], "statement": reqmap[r]["statement"],
-                                    "source": reqmap[r]["source_reference"]} for r in g["impacted_requirement_ids"] if r in reqmap],
-        "blocks_stories_if_unresolved": blocks_requirements(p, g),
+        "impact_on_requirements": [{"id": reqmap[r]["requirement_id"], "key": r, "title": reqmap[r]["title"], "text": reqmap[r]["statement"],
+                                    "source": reqmap[r]["source_reference"]} for r in g["impacted_req_keys"] if r in reqmap],
+        "blocks_ac_if_unresolved": blocks_requirements(p, g),
         "if_carried_forward": (None if blocker else
-                               "The gap stays OPEN. Stories for the affected requirement(s) can still be written, but each one is linked "
-                               "to this gap, names the undecided point and its possible impact, and is flagged NEEDS_CLARIFICATION "
-                               "(or NOT_READY) until the gap is answered. When it is answered the stories are updated and reviewed again."),
+                               "The gap stays OPEN. Acceptance criteria for the affected requirement(s) can still be written, but each "
+                               "one names the undecided point and its possible impact and is flagged NEEDS_CLARIFICATION (or NOT_READY) "
+                               "until the gap is answered. When it is answered the criteria are updated and reviewed again."),
         "carry_forward_not_available_because": blocker,
     }
 
@@ -246,12 +265,12 @@ def _packet(p, g: dict, reqmap: dict, left: int = 0, fallback: bool = False) -> 
     deferral history) lives in `present` - built once, never duplicated here; `gap explain` carries the plain-language facts."""
     blocker = carry_forward_blocker(p, g)
     blocks = blocks_requirements(p, g)
-    view = present.gap_view(g, {"reqmap": reqmap, "blocks_stories": blocks, "carry_ok": blocker is None, "blocker_why": blocker,
-                                "left": left, "story_ids": _story_ids_for(p, g), "fallback": fallback})
+    view = present.gap_view(g, {"reqmap": reqmap, "blocks_ac": blocks, "carry_ok": blocker is None, "blocker_why": blocker,
+                                "left": left, "ac_keys": _ac_keys_for(p, g), "fallback": fallback})
     return {
         "gap_id": g["gap_id"], "priority": g["priority"], "status": g["status"],
-        "material": bool(g["material"]), "impacted_requirement_ids": g["impacted_requirement_ids"],
-        "blocks_stories": blocks, "carry_forward_allowed": blocker is None, "carry_forward_not_allowed_because": blocker,
+        "material": bool(g["material"]), "impacted_req_keys": g["impacted_req_keys"],
+        "blocks_ac": blocks, "carry_forward_allowed": blocker is None, "carry_forward_not_allowed_because": blocker,
         "suggested_answer": g.get("suggested_answer"),
         "defer_requires_revisit_date": g["priority"] in p.state["policy"].get("deferral_revisit_required_priorities", []),
         "revisit_needed_to_answer": g["status"] == "DEFERRED" or bool(g["status"] == "OPEN" and g.get("carry_forward")),
@@ -262,7 +281,7 @@ def _packet(p, g: dict, reqmap: dict, left: int = 0, fallback: bool = False) -> 
 def explain(p, gid: str) -> dict:
     """Explain This Question: a request for help, never an answer. Nothing but an audit event is written."""
     g = _get(p.gaps(), gid)
-    reqmap = {r["requirement_id"]: r for r in p.requirements()}
+    reqmap = _reqmap(p)
     p.audit("GAP_EXPLAINED", gap_id=gid, priority=g["priority"])
     return {"gap_id": gid, "status": g["status"], **_explanation(p, g, reqmap),
             "next": "Explain in plain words with a real-world example, then show the same options again. This is not an answer."}
@@ -290,16 +309,16 @@ def triage(p, status: str | None = None) -> dict:
             "deferral": d and {"reason": d.get("reason"), "by_name": d.get("by_name"), "by_role": d.get("by_role"),
                                "at_ist": d.get("at_ist"), "revisit_by": d.get("revisit_by"), "waiting_on": d.get("owner")},
             "due_for_revisit": g["gap_id"] in due or None, "skipped_count": g["skipped_count"] or None,
-            "requirement_ids": g["impacted_requirement_ids"], "story_ids": _story_ids_for(p, g),
-            "blocks_stories": blocks_requirements(p, g) or None})
+            "req_keys": g["impacted_req_keys"], "ac_keys": _ac_keys_for(p, g),
+            "blocks_ac": blocks_requirements(p, g) or None})
     rows.sort(key=lambda r: (rank[r["priority"]], r["triage_group"] != "OPEN", r["gap_id"]))
     counts = {"OPEN": sum(1 for r in rows if r["triage_group"] == "OPEN"),
               "DEFERRED": sum(1 for r in rows if r["triage_group"] == "DEFERRED"),
               "carried_forward": sum(1 for r in rows if r["carried_forward"]),
-              "blocking": sum(1 for r in rows if r["blocks_stories"])}
+              "blocking": sum(1 for r in rows if r["blocks_ac"])}
     summary = None
     if rows:
-        bits = [f"{len(rows)} gap(s)"] + [f"{n} {w}" for n, w in ((counts["blocking"], "block stories"), (counts["DEFERRED"], "deferred"),
+        bits = [f"{len(rows)} gap(s)"] + [f"{n} {w}" for n, w in ((counts["blocking"], "block acceptance criteria"), (counts["DEFERRED"], "deferred"),
                                                                     (counts["carried_forward"], "carried forward")) if n]
         due_n = sum(1 for r in rows if r["due_for_revisit"])
         summary = (" · ".join(bits) + (f" · {due_n} due for revisit" if due_n else "") + ". Order: "
@@ -330,9 +349,9 @@ def _present_one(p, gid: str, fallback: bool = False) -> dict:
             p.audit("GAP_PRESENTED", gap_ids=[gid])
             if p.state["stage"] == "GAP_ANALYSIS":
                 p.set_stage("WAITING_FOR_GAP_INPUT", "gaps-presented")
-            elif p.state["stage"] in ("REQUIREMENTS_BASELINED", "STORIES_READY", "WAITING_FOR_STORY_REVIEW", "COMPLETED"):
+            elif p.state["stage"] in ("AC_DRAFTING", "WAITING_FOR_AC_REVIEW", "COMPLETED"):
                 p.reopen_to("WAITING_FOR_GAP_INPUT", "gap-revisit")
-    reqmap = {r["requirement_id"]: r for r in p.requirements()}
+    reqmap = _reqmap(p)
     return _packet(p, _get(p.gaps(), gid), reqmap, sum(1 for x in p.gaps() if x['status'] != 'RESOLVED'), fallback)
 
 
@@ -343,7 +362,7 @@ def keep(p, gid: str) -> dict:
     if g["status"] == "DEFERRED" or (g["status"] == "OPEN" and g.get("carry_forward")):
         kind = "DEFERRED" if g["status"] == "DEFERRED" else "CARRIED_FORWARD"
         p.audit("GAP_TRIAGE_KEPT", gap_id=gid, kept_as=kind, priority=g["priority"])
-        return {"gap_id": gid, "status": g["status"], "kept_as": kind, "blocks_stories": blocks_requirements(p, g),
+        return {"gap_id": gid, "status": g["status"], "kept_as": kind, "blocks_ac": blocks_requirements(p, g),
                 "note": f"Left {kind.replace('_', ' ').lower()}; nothing else changed. It is still unresolved."}
     return answer_later(p, gid)
 
@@ -360,7 +379,7 @@ def next_gaps(p, limit: int = 1, carried: bool = False, gap_id: str | None = Non
                 "carried_forward_open": carried_forward_gaps(p), "deferred_due_for_revisit": due_for_revisit(p)}
     require_owner(p)
     gaps = p.gaps()
-    reqmap = {r["requirement_id"]: r for r in p.requirements()}
+    reqmap = _reqmap(p)
     rank = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
     if carried:
         cand = [g for g in gaps if g["status"] == "OPEN" and g.get("carry_forward")]
@@ -387,7 +406,7 @@ def next_gaps(p, limit: int = 1, carried: bool = False, gap_id: str | None = Non
             p.audit("GAP_PRESENTED", gap_ids=touched)
         if p.state["stage"] == "GAP_ANALYSIS" and chosen:
             p.set_stage("WAITING_FOR_GAP_INPUT", "gaps-presented")
-        elif p.state["stage"] in ("REQUIREMENTS_BASELINED", "STORIES_READY", "WAITING_FOR_STORY_REVIEW", "COMPLETED") and chosen:
+        elif p.state["stage"] in ("AC_DRAFTING", "WAITING_FOR_AC_REVIEW", "COMPLETED") and chosen:
             p.reopen_to("WAITING_FOR_GAP_INPUT", "gap-revisit")
         remaining = len(cand) - len(chosen)
     left = sum(1 for g in gaps if g["status"] != "RESOLVED")
@@ -415,10 +434,9 @@ def _get(gaps, gid):
 
 
 def precheck(p, gap: dict, texts: list[str]) -> list[dict]:
-    """Advisory conflict candidates against requirements (business rules included), BRD excerpts, decisions, accepted answers."""
-    against = [(r["requirement_id"], r["statement"]) for r in p.requirements() if r["status"] in ACTIVE_REQ]
-    against += [(f"{r['requirement_id']}/BRD {r['source_reference']}", r["source_excerpt"]) for r in p.requirements()
-                if r["status"] in ACTIVE_REQ and r["requirement_id"] in gap["impacted_requirement_ids"] and r.get("source_excerpt")]
+    """Advisory conflict candidates against requirements, decisions and accepted answers."""
+    labels = reqindex.labels(p)
+    against = [(labels.get(k, k), t) for k, t in reqindex.analysis_texts(p).items()]
     against += [(d["decision_id"], d["validated_interpretation"]) for d in p.decisions().values() if d["current_status"] == "ACTIVE"]
     for g in p.gaps():
         if g["gap_id"] != gap["gap_id"]:
@@ -514,11 +532,10 @@ def record_conflict(p, gap_id: str, answer_id: str, with_ids: list[str], descrip
 def resolve(p, gap_id: str, answer_id: str, interpretation: str, closed_by_name: str | None = None, closed_by_role: str | None = None,
             closure_summary: str | None = None, confirmation: str | None = None, conflict_status: str = "PASSED", conflicting_ids: list[str] | None = None,
             reviewed_ids: list[str] | None = None, change_by_name: str | None = None, change_by_role: str | None = None,
-            change_statement: str | None = None, requirement_updates: dict | None = None,
-            owner_confirmation: str | None = None) -> dict:
+            change_statement: str | None = None, owner_confirmation: str | None = None) -> dict:
     now = ist_now_iso()  # fail early if the clock is unreliable
     conflicting_ids, reviewed_ids = list(conflicting_ids or []), list(reviewed_ids or [])
-    requirement_updates = requirement_updates or {}
+    upstream: list[str] = []
     for jf in p.path("state/pending").glob("*.closure.json"):
         if json.loads(jf.read_text(encoding="utf-8")).get("gap_id") == gap_id:
             raise BAError("CLOSURE_IN_PROGRESS", f"An interrupted closure of {gap_id} exists. Run `recover` before retrying.")
@@ -571,13 +588,8 @@ def resolve(p, gap_id: str, answer_id: str, interpretation: str, closed_by_name:
             raise BAError("MISSING_METADATA", "A change authorisation statement (verbatim) is required.")
         change_auth = {"name": cn, "role": cr, "statement": change_statement.strip(), "at_ist": now}
         decs = p.decisions()
-        for cid in conflicting_ids:
-            if cid.startswith("REQ-"):
-                p.requirement(cid)
-                if cid not in requirement_updates:
-                    raise BAError("REQUIREMENT_UPDATE_REQUIRED", f"{cid} is being changed; supply its new content in --requirement-updates "
-                                  "so the baseline does not keep the contradicted text.")
-            elif cid.startswith("DEC-"):
+        for n, cid in enumerate(conflicting_ids):
+            if cid.startswith("DEC-"):
                 if cid not in decs or decs[cid]["current_status"] != "ACTIVE":
                     raise BAError("UNKNOWN_DECISION", f"{cid} is not an ACTIVE decision.")
                 supersede.append(cid)
@@ -588,14 +600,16 @@ def resolve(p, gap_id: str, answer_id: str, interpretation: str, closed_by_name:
                 og = _get(gaps, cid.split("/")[0])
                 if og["status"] == "RESOLVED":
                     reopen.append(og["gap_id"])
-            else:
-                raise BAError("BAD_INPUT", f"Unrecognised conflicting artifact id {cid}")
-        for rid in requirement_updates:
-            if rid not in conflicting_ids:
-                raise BAError("BAD_INPUT", f"{rid} has an update but is not listed in --conflicting.")
+            else:  # a requirement of the supplied document: it is not edited here, the decision records that it must change upstream
+                try:
+                    rk = p.req_key(cid, active_only=True)
+                except BAError:
+                    raise BAError("BAD_INPUT", f"Unrecognised conflicting artifact id {cid}")
+                conflicting_ids[n] = rk
+                upstream.append(rk)
 
     # materiality: scope/policy/security/compliance/requirement change needs the decision owner
-    material = bool(g.get("material") or conflict_status == "CHANGE_CONFIRMED" or requirement_updates)
+    material = bool(g.get("material") or conflict_status == "CHANGE_CONFIRMED")
     confirmed_by = {"name": closer_name, "role": closer_role}
     owner_stmt = None
     if material and not same_person(closer_name, owner_name):
@@ -619,7 +633,7 @@ def resolve(p, gap_id: str, answer_id: str, interpretation: str, closed_by_name:
     jid = uuid.uuid4().hex[:12]
     decision = {
         "record_type": "decision", "decision_id": did, "gap_id": gap_id,
-        "related_artifact_ids": list(dict.fromkeys(g["impacted_requirement_ids"] + conflicting_ids)),
+        "related_artifact_ids": list(dict.fromkeys(g["impacted_req_keys"] + conflicting_ids)),
         "question": g["question"], "human_response": a["response"], "answer_id": answer_id,
         "validated_interpretation": normalize_ws(interpretation),
         "validation_status": "CHANGE_CONFIRMED" if conflict_status == "CHANGE_CONFIRMED" else "VALIDATED",
@@ -633,7 +647,7 @@ def resolve(p, gap_id: str, answer_id: str, interpretation: str, closed_by_name:
         "supersedes_decision_id": supersede[0] if supersede else None, "supersedes_decision_ids": supersede,
     }
     validation = {"status": conflict_status, "validated_at_ist": now, "reviewed_candidate_ids": reviewed_ids,
-                  "checks": ["completeness", "conflict-vs-brd-requirements", "conflict-vs-decisions", "conflict-vs-answers"],
+                  "checks": ["completeness", "conflict-vs-requirements", "conflict-vs-decisions", "conflict-vs-answers"],
                   "conflicting_artifact_ids": conflicting_ids}
     event = {
         "event_id": "EV-" + jid, "at_ist": now, "timezone": "Asia/Kolkata", "clock_source": "host-system-clock",
@@ -665,11 +679,8 @@ def resolve(p, gap_id: str, answer_id: str, interpretation: str, closed_by_name:
         else:  # an earlier answer was contradictory; this later, conflict-free answer is the clarification
             c["status"], c["resolved_at_ist"], c["resolution"] = "CLARIFIED", now, f"{answer_id} / {did}"
     after["history"].append({"from": "WAITING_FOR_ANSWER", "to": "RESOLVED", "at_ist": now, "note": f"{did} closed by {closer_name}"})
-    req_after = {}
-    for rid, ch in requirement_updates.items():
-        req_after[rid] = reqs.apply_change(p, p.requirement(rid), ch, f"Change confirmed via {gap_id}/{did}", "decision", did)
     journal = {"journal_id": jid, "gap_id": gap_id, "decision": decision, "event": event, "gap_after": after,
-               "requirement_after": req_after, "reopen_gap_ids": sorted(set(reopen)), "superseded": supersede, "created_at_ist": now}
+               "upstream_change_keys": sorted(upstream), "reopen_gap_ids": sorted(set(reopen)), "superseded": supersede, "created_at_ist": now}
     try:
         atomic_write_text(p.path(f"state/pending/{jid}.closure.json"), json.dumps(journal, indent=2, ensure_ascii=False))
     except OSError as e:
@@ -679,16 +690,15 @@ def resolve(p, gap_id: str, answer_id: str, interpretation: str, closed_by_name:
         apply_closure(p, journal)
     except OSError as e:
         raise BAError("WRITE_FAILED", f"Closure of {gap_id} was interrupted ({e}); it is journaled and will be completed by `recover`.")
-    to_update = sorted({s["story_id"] for _, s in p.all_stories() if gap_id in s.get("open_gap_ids", [])})
+    to_update = sorted({a["req_key"] for _, a in p.all_acs() if gap_id in [r["gap_id"] for r in a.get("open_gap_refs", [])]})
     return {"gap_id": gap_id, "status": "RESOLVED", "decision_id": did, "closed_at_ist": now,
             "closed_by": {"name": closer_name, "role": closer_role}, "decision_owner": {"name": owner_name, "role": owner_role},
             "reopened_gaps": journal["reopen_gap_ids"], "superseded_decisions": supersede,
-            "updated_requirements": {k: v["version"] for k, v in req_after.items()},
+            "upstream_change_required": sorted(upstream),
             "was_carried_forward": bool(after.get("carry_forward_history")),
-            "stories_to_update": to_update,
-            "next": ("Refresh the baseline first (`baseline create`, then the human confirms it), then update these stories "
-                     "(`story edit`): drop the gap from unresolved_decisions, apply the decision to the acceptance criteria and "
-                     "reassess readiness. Each new story version is reviewed again."
+            "acs_to_update": to_update,
+            "next": ("Update these acceptance-criteria records (`ac edit`): drop the gap from open_gap_refs, apply the decision to the "
+                     "criteria and reassess readiness. Each new version is reviewed again."
                      if to_update else None)}
 
 
@@ -707,18 +717,7 @@ def apply_closure(p, j: dict) -> None:
     if not any(e.get("event_id") == ev["event_id"] for e in p.audit_events()):
         append_jsonl(p.path("state/audit.jsonl"), ev)
     fault("after_event")
-    changed_reqs = set()
-    for rid, newrec in j["requirement_after"].items():
-        cur = p.requirement(rid)
-        if cur["version"] < newrec["version"]:
-            p.save_requirement(newrec)
-            p.audit("REQUIREMENT_UPDATED", requirement_id=rid, new_version=newrec["version"], cause="decision", decision_id=did)
-            changed_reqs.add(rid)
-    for rid in j["gap_after"]["impacted_requirement_ids"]:
-        r = p.requirement(rid)
-        if did not in r["related_decision_ids"]:
-            r["related_decision_ids"].append(did)
-            p.save_requirement(r)
+    upstream_keys = set(j.get("upstream_change_keys") or [])
     gaps = p.gaps()
     touched = []
     for i, g in enumerate(gaps):
@@ -742,20 +741,20 @@ def apply_closure(p, j: dict) -> None:
     p.render_decision(did)
     for sid in j["superseded"]:
         p.render_decision(sid)
-    # stories that listed this gap as an open point must now be updated and reviewed again
+    # acceptance criteria that listed this gap as an open point must now be updated and reviewed again
     gid = j["gap_id"]
-    p.flag_stories(set(), f"{gid} resolved ({did}): remove it from the story's unresolved decisions, apply the decision and "
-                   "reassess readiness", "gap-resolved", gap_id=gid)
-    if j["gap_after"].get("carry_forward_history"):
-        p.mark_baseline_stale(f"carried-forward gap {gid} resolved")
-    if j["reopen_gap_ids"] or changed_reqs:
-        rids = set(changed_reqs)
-        for og in j["reopen_gap_ids"]:
-            rids |= set(p.gap(og)["impacted_requirement_ids"])
-        if rids:
-            reqs._after_requirement_change(p, rids, f"Confirmed change via {did}", "confirmed-change")
-        if j["reopen_gap_ids"]:
-            p.reopen_to("WAITING_FOR_GAP_INPUT", "gap-reopened")
+    p.flag_acs(set(), f"{gid} resolved ({did}): remove it from the open gaps, apply the decision to the criteria and "
+               "reassess readiness", "gap-resolved", gap_id=gid)
+    rids = set(upstream_keys)
+    for og in j["reopen_gap_ids"]:
+        rids |= set(p.gap(og)["impacted_req_keys"])
+    if upstream_keys:
+        p.audit("UPSTREAM_CHANGE_REQUIRED", gap_id=gid, decision_id=did, req_keys=sorted(upstream_keys),
+                note="the decision contradicts the requirement text; the supplied document is never edited, so the upstream owner must change it")
+    if rids:
+        p.flag_acs(rids, f"Confirmed change via {did}: the decision differs from the requirement text as written", "confirmed-change")
+    if j["reopen_gap_ids"]:
+        p.reopen_to("WAITING_FOR_GAP_INPUT", "gap-reopened")
     p.save_state(f"gap-resolved-{j['gap_id']}")
     jp = p.path(f"state/pending/{j['journal_id']}.closure.json")
     if jp.exists():
@@ -831,9 +830,9 @@ def defer(p, gid: str, reason: str, owner: str | None = None, revisit_by: str | 
                        reason=reason, waiting_on=d["owner"], revisit_by=revisit_by, actor={"name": actor_name, "role": actor_role},
                        decision_owner={"name": dec_owner["name"], "role": dec_owner["role"]}, priority=g["priority"])
     blocking = blocks_requirements(p, g)
-    return {"gap_id": gid, "status": g["status"], "deferral": d, "blocks_stories": blocking,
+    return {"gap_id": gid, "status": g["status"], "deferral": d, "blocks_ac": blocking,
             "note": "Deferred is NOT resolved: the gap stays in the outstanding list"
-                    + (" and keeps the stories of its requirements blocked." if blocking else ".")}
+                    + (" and keeps the acceptance criteria of its requirements blocked." if blocking else ".")}
 
 
 def answer_later(p, gid: str) -> dict:
@@ -846,7 +845,7 @@ def answer_later(p, gid: str) -> dict:
     count = g["skipped_count"] + 1
     g = _change_status(p, gid, "OPEN", "answer later", "GAP_ANSWER_LATER", {"skipped_count": count}, priority=g["priority"],
                        skipped_count=count)
-    return {"gap_id": gid, "status": g["status"], "skipped_count": count, "blocks_stories": blocks_requirements(p, g),
+    return {"gap_id": gid, "status": g["status"], "skipped_count": count, "blocks_ac": blocks_requirements(p, g),
             "note": "Still OPEN and in the outstanding queue; it will be asked again after the other open gaps of this round."}
 
 
@@ -859,7 +858,7 @@ def carry_forward_blocker(p, g: dict) -> str | None:
     if g["status"] == "RESOLVED":
         return "the gap is already resolved"
     if g["priority"] not in ("MEDIUM", "LOW") or g["priority"] in p.state["policy"]["blocking_priorities"]:
-        return f"{g['priority']} gaps always block their stories; answer or formally defer it"
+        return f"{g['priority']} gaps always block their requirements' acceptance criteria; answer or formally defer it"
     if g.get("material"):
         return ("the gap is material (security, compliance, scope or policy); existing blocking rules apply, so it must be "
                 "resolved or deferred, not carried forward")
@@ -871,14 +870,14 @@ def is_carried(p, g: dict) -> bool:
 
 
 def carried_forward_gaps(p) -> list[dict]:
-    return [{"gap_id": g["gap_id"], "priority": g["priority"], "title": g["title"], "requirement_ids": g["impacted_requirement_ids"],
+    return [{"gap_id": g["gap_id"], "priority": g["priority"], "title": g["title"], "req_keys": g["impacted_req_keys"],
              "since_ist": g["carry_forward"]["at_ist"]}
             for g in p.gaps() if g["status"] == "OPEN" and g.get("carry_forward")]
 
 
 def carry_forward(p, gid: str, by_name: str | None = None, by_role: str | None = None, reason: str | None = None) -> dict:
-    """Carry Forward: the gap stays OPEN (never resolved) and stops blocking story generation. The human who chose it and
-    the decision owner are recorded; stories for the affected requirements must name the gap and are flagged for clarification."""
+    """Carry Forward: the gap stays OPEN (never resolved) and stops blocking acceptance criteria. The human who chose it and
+    the decision owner are recorded; criteria for the affected requirements must name the gap and are flagged for clarification."""
     g = _get(p.gaps(), gid)
     if g["status"] not in ("WAITING_FOR_ANSWER", "OPEN"):
         raise BAError("INVALID_TRANSITION", f"Only an open or presented gap can be carried forward; {gid} is {g['status']}.")
@@ -893,18 +892,17 @@ def carry_forward(p, gid: str, by_name: str | None = None, by_role: str | None =
     now = ist_now_iso()
     cf = {"at_ist": now, "timezone": "Asia/Kolkata", "reason": normalize_ws(reason or "") or None, "by_name": actor_name,
           "by_role": actor_role, "decision_owner_name": dec_owner["name"], "decision_owner_role": dec_owner["role"],
-          "priority": g["priority"], "affected_requirement_ids": list(g["impacted_requirement_ids"])}
-    stories = _story_ids_for(p, g)
+          "priority": g["priority"], "affected_req_keys": list(g["impacted_req_keys"])}
+    acs = _ac_keys_for(p, g)
     g = _change_status(p, gid, "OPEN", f"carried forward by {actor_name}, {actor_role}", "GAP_CARRIED_FORWARD", {"carry_forward": cf},
                        now=now, reason=cf["reason"], actor={"name": actor_name, "role": actor_role},
                        decision_owner={"name": dec_owner["name"], "role": dec_owner["role"]}, priority=g["priority"],
-                       requirement_ids=cf["affected_requirement_ids"])
-    p.mark_baseline_stale(f"{gid} carried forward")
+                       req_keys=cf["affected_req_keys"])
     p.reopen_to("WAITING_FOR_GAP_INPUT", "gap-carried-forward")
-    return {"gap_id": gid, "status": g["status"], "carry_forward": cf, "blocks_stories": blocks_requirements(p, g),
-            "stories_to_declare_the_gap": stories,
-            "note": "The gap is still OPEN, not resolved. Stories for " + ", ".join(cf["affected_requirement_ids"])
-                    + " can now be generated; each must name this gap, its possible impact and be flagged NEEDS_CLARIFICATION "
+    return {"gap_id": gid, "status": g["status"], "carry_forward": cf, "blocks_ac": blocks_requirements(p, g),
+            "acs_to_declare_the_gap": acs,
+            "note": "The gap is still OPEN, not resolved. Acceptance criteria for " + ", ".join(p.label(k) for k in cf["affected_req_keys"])
+                    + " can now be written; each must name this gap, its possible impact and be flagged NEEDS_CLARIFICATION "
                       "(or NOT_READY). Revisit it any time with `gap revisit`."}
 
 
@@ -931,10 +929,10 @@ def carry_forward_all(p, by_name: str | None = None, by_role: str | None = None,
             for g in p.gaps() if g["status"] != "RESOLVED" and not g.get("carry_forward") and g["gap_id"] not in ids]
     p.audit("GAP_CARRIED_FORWARD_BULK", gap_ids=ids, by_name=actor_name, by_role=actor_role, reason=normalize_ws(reason or "") or None)
     return {"carried_forward": ids, "count": len(ids), "by": {"name": actor_name, "role": actor_role},
-            "stories_to_declare_the_gaps": sorted({s for c in carried for s in c["stories_to_declare_the_gap"]}),
+            "acs_to_declare_the_gaps": sorted({s for c in carried for s in c["acs_to_declare_the_gap"]}),
             "not_carried": left,
-            "note": "Every listed gap is still OPEN, not resolved. Stories for their requirements can now be generated, each naming "
-                    "the gap(s) and flagged NEEDS_CLARIFICATION (or NOT_READY). `not_carried` gaps (CRITICAL/HIGH/material, deferred "
+            "note": "Every listed gap is still OPEN, not resolved. Acceptance criteria for their requirements can now be written, each "
+                    "naming the gap(s) and flagged NEEDS_CLARIFICATION (or NOT_READY). `not_carried` gaps (CRITICAL/HIGH/material, deferred "
                     "or not yet asked) keep their own rules. Revisit any of them with `gap revisit` / `gaps next --carried`."}
 
 
@@ -943,11 +941,10 @@ def revisit(p, gid: str) -> dict:
     if cur["status"] == "OPEN" and cur.get("carry_forward"):
         require_owner(p, cur)
         g = _change_status(p, gid, "WAITING_FOR_ANSWER", "carried-forward gap revisited", "GAP_CARRY_FORWARD_REVISITED",
-                           priority=cur["priority"], requirement_ids=cur["impacted_requirement_ids"])
-        p.mark_baseline_stale(f"{gid} revisited")
+                           priority=cur["priority"], req_keys=cur["impacted_req_keys"])
         p.reopen_to("WAITING_FOR_GAP_INPUT", "gap-revisit")
-        return {"gap_id": gid, "status": g["status"], "blocks_stories": blocks_requirements(p, g),
-                "note": "Asked again. Until it is resolved or carried forward again it blocks its stories like any open gap."}
+        return {"gap_id": gid, "status": g["status"], "blocks_ac": blocks_requirements(p, g),
+                "note": "Asked again. Until it is resolved or carried forward again it blocks its acceptance criteria like any open gap."}
     if cur["status"] != "DEFERRED":
         raise BAError("INVALID_TRANSITION", f"Only a DEFERRED or carried-forward gap can be revisited; {gid} is {cur['status']}.")
     require_owner(p, cur)
@@ -990,9 +987,9 @@ def reopen(p, gid: str, reason: str, by_name: str, by_role: str, statement: str 
     p.save_gaps(gaps, touched=[gid])
     p.render_decision(did)
     p.audit("GAP_REOPENED", gap_id=gid, decision_id=did, reason=reason, by_name=by_name, by_role=by_role, statement=statement)
-    impact = reqs._after_requirement_change(p, set(g["impacted_requirement_ids"]), f"{gid} reopened: {reason}", "gap-reopened")
+    flagged = p.flag_acs(set(g["impacted_req_keys"]), f"{gid} reopened: {reason}", "gap-reopened")
     p.reopen_to("WAITING_FOR_GAP_INPUT", "gap-reopened")
-    return {"gap_id": gid, "status": "REOPENED", "invalidated_decision": did, **impact}
+    return {"gap_id": gid, "status": "REOPENED", "invalidated_decision": did, "flagged_acs": flagged}
 
 
 def set_policy(p, accept_carry_forward: bool | None, by_name: str, by_role: str, statement: str,
@@ -1018,7 +1015,7 @@ def set_policy(p, accept_carry_forward: bool | None, by_name: str, by_role: str,
 
 
 def blocks_requirements(p, g: dict) -> bool:
-    """Does this unresolved gap block the stories of the requirements it affects?
+    """Does this unresolved gap block the acceptance criteria of the requirements it affects?
     CRITICAL/HIGH always do, and so does any material (scope/policy/security/compliance) gap; other gaps block unless the
     human carried that gap forward or accepted the project-wide non-blocking policy."""
     if g["status"] == "RESOLVED":
@@ -1030,21 +1027,21 @@ def blocks_requirements(p, g: dict) -> bool:
 
 
 def blocked_requirements(p) -> dict[str, list[str]]:
-    """requirement_id → blocking gap ids (see blocks_requirements)."""
+    """req_key → blocking gap ids (see blocks_requirements)."""
     out: dict[str, list[str]] = {}
     for g in p.gaps():
         if blocks_requirements(p, g):
-            for rid in g["impacted_requirement_ids"]:
+            for rid in g["impacted_req_keys"]:
                 out.setdefault(rid, []).append(g["gap_id"])
     return out
 
 
 def open_nonblocking_requirements(p) -> dict[str, list[str]]:
-    """requirement_id → unresolved gap ids that do NOT block it (carried forward, or accepted by policy)."""
+    """req_key → unresolved gap ids that do NOT block it (carried forward, or accepted by policy)."""
     out: dict[str, list[str]] = {}
     for g in p.gaps():
         if g["status"] != "RESOLVED" and not blocks_requirements(p, g):
-            for rid in g["impacted_requirement_ids"]:
+            for rid in g["impacted_req_keys"]:
                 out.setdefault(rid, []).append(g["gap_id"])
     return out
 

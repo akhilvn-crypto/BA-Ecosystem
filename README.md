@@ -1,18 +1,17 @@
 # BA Agents — Interactive Business Analyst plugin for Claude
 
-This repo is a Claude Code **plugin marketplace** (`ba-agents`). It ships one plugin, **`ba-agent`**, which turns a Business Requirements Document (BRD) into traceable requirements, resolved gaps and **human-approved user stories**.
+This repo is a Claude Code **plugin marketplace** (`ba-agents`). It ships one plugin, **`ba-agent`**, which takes the requirements your upstream agent already wrote (a folder of Markdown files), finds the gaps, resolves them with a named decision owner and adds **human-approved acceptance criteria** to a generated, enriched copy of each requirement file.
 
 ## Purpose
 
-Business analysts and project managers lose time turning BRDs into clean requirements and chasing open questions. `ba-agent` does the legwork and keeps you in control of every decision:
+Business analysts and project managers lose time chasing open questions in requirements that look finished. `ba-agent` does the legwork and keeps you in control of every decision:
 
-1. **Reads the BRD** (`.docx`, `.md`, `.txt`). The original is never modified.
-2. **Extracts atomic requirements** (`REQ-###`) with verbatim source quotes.
-3. **Finds gaps** (10-category taxonomy, prioritised, one question each).
-4. **Resolves gaps with a named decision owner**. Every closure is recorded with who decided, their role and an IST timestamp.
-5. **Freezes a versioned baseline** (`baseline-vN`) once you confirm it.
-6. **Drafts user stories** with Given/When/Then criteria. Only the ones you approve are saved to `stories/approved/` (readable files in `md/`, records in `json/`).
-7. **Detects changes** to the BRD and to approved stories, explains their impact before anything is updated, and never discards a manual edit.
+1. **Reads the requirements** (`.md` files, or one file) read-only. **Your files are never modified**; each requirement is located by the ID it already carries.
+2. **Finds gaps** (10-category taxonomy, prioritised, one question each, quoting the requirement).
+3. **Resolves gaps with a named decision owner**. Every closure is recorded with who decided, their role and an IST timestamp.
+4. **Drafts acceptance criteria** (Given/When/Then) for each requirement whose gaps do not block it. Only the ones you approve are saved to `acceptance/approved/`.
+5. **Writes an enriched copy** of every requirement file under `enriched/`: the same text, plus under each requirement its approved criteria, its open gaps and a readiness flag.
+6. **Detects changes** to the requirements and to approved criteria, explains their impact before anything is updated, and never discards a manual edit.
 
 Nothing is approved, resolved or deferred without your explicit decision. All state lives as plain files in a folder you choose, so work is fully resumable.
 
@@ -43,38 +42,37 @@ Try it for one session without installing: `claude --plugin-dir ./ba-agent-plugi
 
 Restart Claude Code (or run `/reload-plugins`) afterwards. Updates are detected by the `version` in `ba-agent-plugin/.claude-plugin/plugin.json`, so maintainers must bump it (and add a `CHANGELOG.md` entry) with every release.
 
+Upgrading from 1.x: 2.0 replaces the BRD → baseline → user-story pipeline; 1.x projects open as `LEGACY_PROJECT` and are not migrated (see the changelog).
+
 ## How to use it (BA / Project Manager)
 
 | Command | Use it to |
 |---|---|
-| `/ba-agent:start [BRD path or project folder]` | Start a new project from a BRD, or resume an existing one |
+| `/ba-agent:start [requirements folder or file, or project folder]` | Start a new project from a folder of requirement `.md` files, or resume an existing one |
 | `/ba-agent:status [folder]` | See the stage, progress, blockers and next step |
-| `/ba-agent:review [folder]` | Carry on where you left off (answers gaps, reviews stories, handles a stale baseline or impact review) |
+| `/ba-agent:review [folder]` | Carry on where you left off (answers gaps, reviews criteria, handles an impact review) |
 | `/ba-agent:triage-gaps [folder]` | List every OPEN and DEFERRED gap, then answer, explain, defer, carry forward or keep each one |
-| `/ba-agent:triage-stories [folder]` | List every unapproved story (pending, not approved, deferred), then approve, edit or defer each one |
-| `/ba-agent:changes [folder]` | Check for BRD or approved-story changes, see what is affected, and decide whether to apply them |
+| `/ba-agent:triage-ac [folder]` | List every unapproved acceptance-criteria record (pending, not approved, deferred), then approve, edit or defer each one |
+| `/ba-agent:changes [folder]` | Check for requirement, criteria or enriched-copy changes, see what is affected, and decide whether to apply them |
 
 Typical flow:
 
-1. Run `/ba-agent:start D:\docs\MyProject-BRD.docx` and confirm the output folder.
+1. Run `/ba-agent:start D:\docs\my-requirements` and confirm the project folder (proposed next to the requirements, in `ba-output/`).
 2. Give the **decision owner's name and role** (for example, "Priya Nair — Product Owner"). This is asked before the first gap.
-3. Answer gaps one at a time (highest priority first). Every gap lets you type an answer or instruction in **Other** or pick **Explain This Question**. For **Critical/High/security-or-compliance** gaps you can also pick **Answer Later** or **Defer This Gap** (a reason is required). Before the first **Medium/Low** gap you are asked once whether to go through each or **carry them all forward** in one step. For **Medium/Low** gaps you can instead use the **Suggested Answer** (only offered when the BRD supports one) or **Carry Forward**: the gap stays open and visible, stories are still written, and each affected story names the gap, its possible impact and is marked as needing clarification until you answer. Confirm each closure.
-4. Confirm the **baseline**.
-5. Review stories one by one: **approve**, **edit** (creates a new version that needs re-approval) or **defer**.
-6. Take the approved stories from `<project>/stories/approved/md/` (the machine-readable records are in `…/approved/json/`).
+3. Answer gaps one at a time (highest priority first). Every gap lets you type an answer or instruction in **Other** or pick **Explain This Question**. For **Critical/High/security-or-compliance** gaps you can also pick **Answer Later** or **Defer This Gap** (a reason is required). Before the first **Medium/Low** gap you are asked once whether to go through each or **carry them all forward** in one step. For **Medium/Low** gaps you can instead use the **Suggested Answer** (only offered when the document supports one) or **Carry Forward**: the gap stays open and visible, criteria are still written, and each affected requirement's criteria name the gap, its possible impact and are marked as needing clarification until you answer.
+4. Review acceptance criteria one requirement at a time: **approve**, **edit** (creates a new version that needs re-approval) or **defer**.
+5. Open the enriched copies in `<project>/enriched/` (the machine-readable criteria records are in `acceptance/approved/json/`).
 
 Every stage saves its files into the project folder as it finishes (readable copies in each folder's `md/` subfolder, records in `json/`), and Claude tells you where before it asks for your review. Nothing has to be copied.
 
-If the BRD changes, run `/ba-agent:changes <project folder>` (or `/ba-agent:start <project folder>` again). The change is explained first: what changed, and which requirements, open gaps, decisions, stories and baseline it touches. Nothing moves until you apply it, and only the affected items are flagged for review. Formatting-only edits (layout, whitespace, re-wrapping) are accepted automatically; a changed word or number is always treated as material. Earlier decisions stay on record.
+If the upstream agent changes the requirements, run `/ba-agent:changes <project folder>` (or `/ba-agent:start <project folder>` again). The change is explained first: what changed, and which gaps, decisions and criteria it touches. Nothing moves until you apply it, and only the affected items are flagged for review. Formatting-only edits are accepted automatically; a changed word or number is always treated as material. Earlier decisions stay on record.
 
-Approved stories are tracked the same way: if someone edits one by hand, the edit is kept verbatim and becomes the next version needing re-approval. The approved version stays in force until then. Deleted approved stories can be restored, and `story history` lists every approved version with its approver.
-
-**For project managers:** use `/ba-agent:status` for a quick read on open gaps and pending reviews. `reports/workflow-summary.md` and `reports/traceability-report.md` give a shareable view of progress and requirement-to-story coverage.
+**For project managers:** use `/ba-agent:status` for a quick read on open gaps and pending reviews. `reports/workflow-summary.md` and `reports/traceability-report.md` give a shareable view of progress and requirement-to-criteria coverage.
 
 ## Limits
 
-- PDF input is not supported. Export the BRD to `.docx`, `.md` or `.txt`.
-- Images inside DOCX files are not read.
+- Markdown requirements only; ask the upstream agent for a Markdown export of anything else.
+- A decision that contradicts a requirement is recorded, but your files are never edited: the requirement's owner must change it upstream.
 - Claude Cowork use is unverified (see the compatibility doc).
 
 ## Documentation
@@ -85,6 +83,6 @@ All in [`ba-agent-plugin/`](ba-agent-plugin/): [User guide](ba-agent-plugin/docs
 
 ```
 cd ba-agent-plugin
-python -m unittest discover -s tests -t . -v      # 244 tests
+python -m unittest discover -s tests -t . -v
 claude plugin validate .
 ```

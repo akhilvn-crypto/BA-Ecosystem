@@ -1,729 +1,412 @@
-"""Change detection & impact analysis: BRD edits, story edits, deletions, formatting-only changes, downstream impact,
-approval preservation and workflow resumption."""
-from __future__ import annotations
-
-import contextlib
-import io
+"""Approved acceptance criteria: hand edits (in the enriched copy or the record), deletion, restore, revert, agent edits, reconciliation."""
 import json
-import sys
 import unittest
-from pathlib import Path
 
-from tests.helpers import BATest, FIXTURE  # noqa: F401  (sys.path is set up by helpers)
+from tests.helpers import (BATest, acs, actrack, changemod, checks, docmodel, docsync, gapmod, projmod, reqindex, util, key)
 
-from ba_lib import changes, checks, cli, gaps as gapmod, ingest, reqs, snapshots, stories, storytrack, util  # noqa: E402
-from ba_lib.project import Project  # noqa: E402
-from ba_lib.util import BAError  # noqa: E402
-
-PO = ("Priya Nair", "Product Owner")
+K1, K2, K3 = key("LIB-001"), key("LIB-002"), key("LIB-003")
+EDITED = "Given a visitor with a valid email, when they register, then a member exists and a welcome page is shown."
 
 
-def code_of(fn, *a, **k):
-    try:
-        fn(*a, **k)
-    except BAError as e:
-        return e.code
-    return None
+def fn(rid):
+    return projmod.ac_fname(key(rid))
 
 
-class ChangeTest(BATest):
-    def brd_path(self) -> Path:
-        return self.tmp / "inputs" / "brd.md"
-
-    def edit_brd(self, fn):
-        f = self.brd_path()
-        f.write_text(fn(f.read_text(encoding="utf-8")), encoding="utf-8")
-
-    def two_approved(self) -> Project:
-        p = self.to_stories()
-        stories.approve(p, "US-001", 1, "I approve US-001 v1.", *PO)
-        stories.approve(p, "US-002", 1, "I approve US-002 v1.", *PO)
+class Base(BATest):
+    def approved3(self):
+        p = self.to_acs(3)
+        for r in ("LIB-001", "LIB-002", "LIB-003"):
+            self.approve(p, r)
         return p
 
-    def approved_json(self, p, sid="US-001") -> dict:
-        return json.loads((p.root / "stories" / "approved" / "json" / f"{sid}.json").read_text(encoding="utf-8"))
+    def jpath(self, p, rid, bucket="approved"):
+        return p.path(f"acceptance/{bucket}/{fn(rid)}.json")
 
-    def write_approved_json(self, p, s, sid="US-001"):
-        (p.root / "stories" / "approved" / "json" / f"{sid}.json").write_text(json.dumps(s, indent=2), encoding="utf-8")
+    def edit_json(self, p, rid, mutate):
+        f = self.jpath(p, rid)
+        d = json.loads(f.read_text(encoding="utf-8"))
+        mutate(d)
+        f.write_text(json.dumps(d, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    def events(self, p, kind=None):
-        return [e for e in p.audit_events() if not kind or e["event_type"] == kind]
+    def edit_block(self, p, old, new, rel="membership.md"):
+        f = p.enriched_root / rel
+        t = f.read_text(encoding="utf-8")
+        self.assertIn(old, t)
+        f.write_bytes(t.replace(old, new, 1).encode("utf-8"))
 
-    def ba(self, p, *argv):
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            rc = cli.main(["--root", str(p.root), *argv])
-        txt = buf.getvalue()
-        try:
-            return rc, json.loads(txt)
-        except json.JSONDecodeError:
-            return rc, {"raw": txt}
+    def apply(self, p, cid=None):
+        return changemod.apply(p, cid, "Priya Nair", "Product Owner", "I have seen it; apply.")
 
-
-# =================================================================== BRD changes
-
-class BrdChangeDetectionTests(ChangeTest):
-    def test_baseline_snapshot_and_hashes_are_recorded_at_start(self):
-        p = self.new_project()
-        idx = snapshots.index(p)
-        self.assertEqual([v["version"] for v in idx["versions"]], [1])
-        v = idx["versions"][0]
-        self.assertEqual(v["fingerprint"], p.state["source"]["fingerprint"])
-        self.assertEqual(v["material_fingerprint"], p.state["source"]["material_fingerprint"])
-        self.assertIsNotNone(snapshots.text_of(p, v), "snapshot text must match its recorded hash")
-        self.assertTrue(p.exists("snapshots/brd/brd-v1.txt"))
-        self.assertIn("BRD_SNAPSHOT_RECORDED", [e["event_type"] for e in p.audit_events()])
-
-    def test_unchanged_brd_reports_nothing_and_records_nothing(self):
-        p = self.to_baseline()
-        out = changes.check(p)
-        self.assertEqual(out["source"], "unchanged")
-        self.assertEqual(out["changes"], [])
-        self.assertFalse(out["requires_review"])
-        self.assertEqual(changes.records(p), [])
-
-    def test_brd_edit_is_detected_explained_and_touches_nothing_downstream(self):
-        p = self.two_approved()
-        stories.add_stories(p, [self.story_item("Enforce return period", ("REQ-004",),
-                                                acceptance_criteria=["Given a loan older than 14 days, when checked, then it is overdue."])])
-        stories.approve(p, "US-003", 1, "approve", *PO)
-        before_fp = p.state["source"]["fingerprint"]
-        self.edit_brd(lambda t: t.replace("within 14 days", "within 21 days"))
-        edited_hash = util.sha256_file(self.brd_path())
-
-        out = changes.check(p)
-
-        self.assertTrue(out["requires_review"])
-        rec = out["changes"][0]
-        self.assertEqual((rec["change_id"], rec["status"], rec["classification"], rec["type"]), ("CHG-001", "DETECTED", "MATERIAL", "SOURCE_CHANGE"))
-        mod = [c for c in rec["changes"] if c["change"] == "MODIFIED"]
-        self.assertEqual(len(mod), 1)
-        self.assertIn("2.2", mod[0]["section_key"])
-        self.assertIn("14 days", " ".join(mod[0]["hunks"][0]["removed"]))
-        self.assertIn("21 days", " ".join(mod[0]["hunks"][0]["added"]))
-        imp = rec["impact"]
-        self.assertEqual([a["requirement_id"] for a in imp["affected_requirements"]], ["REQ-003", "REQ-004"])
-        by = {a["requirement_id"]: a for a in imp["affected_requirements"]}
-        self.assertEqual(by["REQ-003"]["impact"], "SECTION_CHANGED_QUOTED_TEXT_INTACT")
-        self.assertEqual(by["REQ-004"]["impact"], "QUOTED_TEXT_REMOVED_OR_REWORDED")
-        self.assertEqual(imp["approved_stories_at_risk"], ["US-003"])
-        self.assertTrue(imp["baseline"]["will_be_marked_stale"])
-        self.assertTrue(imp["decisions_to_revalidate"], "confirmed decisions are listed for re-validation, never invalidated")
-        self.assertTrue(all(d["current_status"] == "ACTIVE" for d in p.decisions().values()))
-        self.assertTrue(rec["required_actions"])
-        self.assertTrue(p.exists("changes/md/CHG-001.md"))
-        self.assertIn("21 days", (p.root / "changes" / "md" / "CHG-001.md").read_text(encoding="utf-8"))
-
-        # NOTHING downstream changed yet, and the BRD itself is untouched
-        self.assertEqual(p.requirement("REQ-004")["status"], "ACTIVE")
-        self.assertFalse(p.baseline_manifest()["stale"])
-        self.assertFalse(p.state["impact_review"]["pending"])
-        self.assertIsNone(self.approved_json(p, "US-003")["impact_review"])
-        self.assertEqual(p.state["source"]["fingerprint"], before_fp, "accepted fingerprint is not silently replaced")
-        self.assertEqual(util.sha256_file(self.brd_path()), edited_hash, "the BRD file is only ever read")
-
-    def test_check_is_idempotent(self):
-        p = self.to_baseline()
-        self.edit_brd(lambda t: t.replace("within 14 days", "within 21 days"))
-        a = changes.check(p)["changes"][0]["change_id"]
-        b = changes.check(p)["changes"][0]["change_id"]
-        self.assertEqual((a, b), ("CHG-001", "CHG-001"))
-        self.assertEqual(len(changes.records(p)), 1)
-
-    def test_apply_needs_the_person_and_their_words_then_marks_artifacts_stale(self):
-        p = self.two_approved()
-        self.edit_brd(lambda t: t.replace("A member may borrow at most 5 books", "A member may borrow at most 7 books"))
-        cid = changes.check(p)["changes"][0]["change_id"]
-        self.assertEqual(code_of(changes.apply, p, cid, "", "", "go"), "IDENTITY_REQUIRED")
-        self.assertEqual(code_of(changes.apply, p, cid, *PO, ""), "BAD_INPUT")
-        self.assertEqual(p.requirement("REQ-003")["status"], "ACTIVE", "a refused apply changes nothing")
-
-        out = changes.apply(p, cid, *PO, "I have seen the impact; apply it.")
-
-        self.assertEqual(out["status"], "APPLIED")
-        self.assertEqual(p.requirement("REQ-003")["status"], "NEEDS_REVIEW")
-        self.assertTrue(p.baseline_manifest()["stale"])
-        self.assertTrue(p.state["impact_review"]["pending"])
-        self.assertEqual(p.state["impact_review"]["change_id"], cid)
-        self.assertEqual(p.state["stage"], "GAP_ANALYSIS", "workflow reopened to reassess")
-        rec = changes.get(p, cid)
-        self.assertEqual(rec["applied"]["by_name"], "Priya Nair")
-        self.assertEqual(rec["applied"]["statement"], "I have seen the impact; apply it.")
-        kinds = {i["kind"] for i in rec["items"]}
-        self.assertTrue({"requirement", "source_acceptance", "baseline"} <= kinds)
-        self.assertEqual(code_of(changes.apply, p, cid, *PO, "again"), "NOT_APPLICABLE")
-        types = [e["event_type"] for e in p.audit_events()]
-        for t in ("CHANGE_DETECTED", "CHANGE_APPLIED", "SOURCE_CHANGED"):
-            self.assertIn(t, types)
-        self.assertEqual(self.events(p, "CHANGE_APPLIED")[0]["by_name"], "Priya Nair")
-
-    def test_deleted_section_is_reported_as_deletion_with_requirement_impact(self):
-        p = self.with_requirements()
-        self.edit_brd(lambda t: t.replace("## 4. Reporting\nThe system should provide staff a report of overdue books.\n", ""))
-        rec = changes.check(p)["changes"][0]
-        dele = [c for c in rec["changes"] if c["change"] == "DELETED"]
-        self.assertEqual(len(dele), 1)
-        self.assertIn("overdue", dele[0]["excerpt"])
-        self.assertEqual(rec["impact"]["affected_requirements"][0]["requirement_id"], "REQ-007")
-        self.assertEqual(rec["impact"]["affected_requirements"][0]["impact"], "SECTION_DELETED")
-        cid = rec["change_id"]
-        changes.apply(p, cid, *PO, "apply")
-        self.assertEqual(p.requirement("REQ-007")["status"], "NEEDS_REVIEW")
-        self.assertEqual(code_of(reqs.source_accept, p, *PO, "ok"), "IMPACT_REVIEW_INCOMPLETE")
-        reqs.remove_requirement(p, "REQ-007", "Dropped from the BRD", *PO)
-        self.assertTrue(p.exists("atomic-requirements/md/REQ-007.md"), "removed requirements are retained, never deleted")
-
-    def test_added_section_is_listed_and_closed_by_requirement_or_dismissal(self):
-        p = self.with_requirements()
-        self.edit_brd(lambda t: t + "\n## 6. Notifications\nMembers shall receive an email reminder two days before a book is due.\n")
-        rec = changes.check(p)["changes"][0]
-        self.assertEqual([c["change"] for c in rec["changes"]], ["ADDED"])
-        self.assertEqual(rec["impact"]["affected_requirements"], [])
-        self.assertEqual(len(rec["impact"]["new_sections_without_requirements"]), 1)
-        cid = rec["change_id"]
-        changes.apply(p, cid, *PO, "apply")
-        item = next(i for i in changes.get(p, cid)["items"] if i["kind"] == "new_section")
-        self.assertEqual(item["state"], "OPEN")
-        self.assertEqual(code_of(changes.dismiss, p, cid, "requirement:REQ-001", "x", *PO), "UNKNOWN_ITEM")
-        self.assertEqual(code_of(changes.dismiss, p, cid, item["item_id"], "", *PO), "REASON_REQUIRED")
-        reqs.source_accept(p, *PO, "accepted the new section")
-        changes.dismiss(p, cid, item["item_id"], "Notifications are out of scope for this release.", *PO)
-        rec = changes.get(p, cid)
-        self.assertEqual(next(i for i in rec["items"] if i["kind"] == "new_section")["state"], "DISMISSED")
-        self.assertIn("Notifications are out of scope", next(i for i in rec["items"] if i["kind"] == "new_section")["reason"])
-
-    def test_formatting_only_edits_need_no_review_and_are_recorded(self):
-        p = self.to_baseline()
-        old_fp = p.state["source"]["fingerprint"]
-        def reformat(t):
-            t = t.replace("### 2.2 Borrowing limits\nA member may borrow at most 5 books at the same time.\nBorrowed books must be returned within 14 days.",
-                          "### 2.2 Borrowing limits\n\n- A member may borrow at most **5** books at the same time.\n- Borrowed books must be\n  returned within 14 days.\n\n\n")
-            return t.replace("The system must send a confirmation email", "The system  must send   a *confirmation* email")
-        self.edit_brd(reformat)
-        out = changes.check(p)
-        self.assertEqual(out["source"], "formatting_only")
-        self.assertEqual(out["unreviewed_ids"], [])
-        self.assertFalse(out["requires_review"])
-        self.assertEqual(len(out["formatting_only_accepted"]), 1)
-        self.assertEqual(out["formatting_only_accepted"][0]["classification"], "FORMATTING_ONLY")
-        self.assertEqual(out["formatting_only_accepted"][0]["status"], "RECORDED")
-        # no review burden: nothing flagged, baseline still current, requirements untouched
-        self.assertFalse(p.baseline_manifest()["stale"])
-        self.assertFalse(p.state["impact_review"]["pending"])
-        self.assertEqual({r["status"] for r in p.requirements()}, {"ACTIVE"})
-        self.assertEqual(p.requirement("REQ-003")["version"], 1)
-        # but the fingerprint moved, a new snapshot exists, and the audit trail says why
-        self.assertNotEqual(p.state["source"]["fingerprint"], old_fp)
-        self.assertEqual([v["version"] for v in snapshots.index(p)["versions"]], [1, 2])
-        self.assertEqual(len(self.events(p, "SOURCE_FORMATTING_CHANGE_RECORDED")), 1)
-        self.assertTrue(checks.validate_project(p)["ok"], checks.validate_project(p)["errors"])
-        self.assertEqual(changes.check(p)["source"], "unchanged")
-
-    def test_a_changed_number_is_material_even_inside_formatting(self):
-        p = self.to_baseline()
-        self.edit_brd(lambda t: t.replace("at most 5 books", "at most **6** books"))
-        out = changes.check(p)
-        self.assertEqual(out["source"], "changed")
-        self.assertEqual(out["changes"][0]["classification"], "MATERIAL")
-
-    def test_bytes_only_change_is_formatting(self):
-        p = self.to_baseline()
-        self.brd_path().write_text(self.brd_path().read_text(encoding="utf-8").replace("\n", "   \n"), encoding="utf-8")
-        out = changes.check(p)
-        self.assertEqual(out["source"], "formatting_only")
-        self.assertEqual(out["unreviewed_ids"], [])
-
-    def test_second_edit_supersedes_unapplied_change_and_revert_is_recorded(self):
-        p = self.to_baseline()
-        original = self.brd_path().read_bytes()
-        self.edit_brd(lambda t: t.replace("within 14 days", "within 21 days"))
-        first = changes.check(p)["changes"][0]["change_id"]
-        self.edit_brd(lambda t: t.replace("within 21 days", "within 30 days"))
-        second = changes.check(p)["changes"][0]["change_id"]
-        self.assertNotEqual(first, second)
-        self.assertEqual(changes.get(p, first)["status"], "SUPERSEDED")
-        self.assertEqual(changes.get(p, first)["superseded_by"], second)
-        self.brd_path().write_bytes(original)
-        out = changes.check(p)
-        self.assertEqual(out["source"], "unchanged")
-        self.assertEqual(changes.get(p, second)["status"], "REVERTED")
-        self.assertEqual(out["unreviewed_ids"], [])
-
-    def test_apply_refuses_a_stale_record(self):
-        p = self.to_baseline()
-        self.edit_brd(lambda t: t.replace("within 14 days", "within 21 days"))
-        cid = changes.check(p)["changes"][0]["change_id"]
-        self.edit_brd(lambda t: t.replace("within 21 days", "within 30 days"))
-        self.assertEqual(code_of(changes.apply, p, cid, *PO, "apply"), "CHANGE_RECORD_STALE")
-        self.assertEqual(p.requirement("REQ-004")["status"], "ACTIVE")
-
-    def test_full_reconciliation_of_a_brd_change(self):
-        p = self.two_approved()
-        stories.add_stories(p, [self.story_item("Borrow limit", ("REQ-003",),
-                                                acceptance_criteria=["Given five loans, when a sixth is attempted, then it is refused."])])
-        stories.approve(p, "US-003", 1, "approve", *PO)
-        self.edit_brd(lambda t: t.replace("within 14 days", "within 21 days")
-                      + "\n## 6. Notifications\nMembers shall receive an email reminder two days before a book is due.\n")
-        cid = changes.check(p)["changes"][0]["change_id"]
-        changes.apply(p, cid, *PO, "apply")
-        self.assertEqual(changes.get(p, cid)["status"], "APPLIED")
-        reqs.update_requirement(p, "REQ-004", {"statement": "Borrowed books must be returned within 21 days.",
-                                               "source_excerpt": "Borrowed books must be returned within 21 days."},
-                                "BRD changed return period", "source-change")
-        reqs.confirm_requirement(p, "REQ-003", "Quoted text unchanged.")
-        reqs.source_accept(p, *PO, "Accepted.")
-        self.assertEqual([v["version"] for v in snapshots.index(p)["versions"]], [1, 2], "accepting records the new BRD version")
-        self.assertEqual(snapshots.latest(p)["change_id"], cid)
-        reqs.add_requirements(p, [dict(title="Due-date reminder", statement="Members receive a reminder two days before a book is due.",
-                                       type="FUNCTIONAL", source_section_ids=[self.sec(p, "6. Notifications")],
-                                       source_excerpt="Members shall receive an email reminder two days before a book is due.")])
-        changes.reconcile(p)
-        open_now = [i["item_id"] for i in changes.get(p, cid)["items"] if i["state"] == "OPEN"]
-        self.assertEqual(changes.get(p, cid)["status"], "APPLIED", "requirements are reassessed but the baseline and stories are not")
-        self.assertTrue(any(i.startswith("baseline") for i in open_now), open_now)
-        self.assertIn("story:US-003", open_now)
-        gapmod.commit_analysis(p, True)
-        from ba_lib import baseline as basemod
-        basemod.create(p, "after BRD change")
-        basemod.confirm(p, 2, *PO, "Baseline v2 approved.")
-        for _, s in p.all_stories():
-            if (s.get("impact_review") or {}).get("pending"):
-                stories.confirm_unaffected(p, s["story_id"], "Reviewed; the change does not affect this story.", *PO)
-        changes.reconcile(p)
-        rec = changes.get(p, cid)
-        self.assertEqual(rec["status"], "RECONCILED", [i for i in rec["items"] if i["state"] == "OPEN"])
-        self.assertIsNotNone(rec["reconciled_at_ist"])
-        self.assertIn("CHANGE_RECONCILED", [e["event_type"] for e in p.audit_events()])
-        self.assertTrue(checks.validate_project(p)["ok"], checks.validate_project(p)["errors"])
-
-    def test_project_without_snapshot_degrades_honestly_and_backfills_when_unchanged(self):
-        p = self.to_baseline()
-        import shutil
-        shutil.rmtree(p.root / "snapshots")
-        st = p.state["source"]
-        st.pop("material_fingerprint", None)
-        p.save_state("test-legacy")
-        self.assertEqual(changes.check(p)["source"], "unchanged")
-        self.assertEqual(len(snapshots.index(p)["versions"]), 1, "backfilled while the BRD still matched")
-        shutil.rmtree(p.root / "snapshots")
-        self.edit_brd(lambda t: t.replace("within 14 days", "within 21 days"))
-        out = changes.check(p)
-        self.assertTrue(any("not stored" in w for w in out["warnings"]))
-        self.assertEqual(out["changes"][0]["classification"], "MATERIAL")
+    def err(self, fn_, *a, **kw):
+        with self.assertRaises(util.BAError) as cm:
+            fn_(*a, **kw)
+        return cm.exception
 
 
-# ============================================================== approved stories
-
-class StoryChangeDetectionTests(ChangeTest):
+class ApprovedAcChangeTests(Base):
     def test_approval_records_hashes_and_an_immutable_copy(self):
-        p = self.two_approved()
-        e = storytrack.entry(p, "US-001")
-        v = storytrack.current(e)
+        p = self.approved3()
+        e = actrack.entry(p, K1)
+        v = actrack.current(e)
         self.assertEqual(v["version"], 1)
         self.assertEqual(v["approver_name"], "Priya Nair")
         self.assertTrue(p.exists(v["snapshot"]))
-        self.assertEqual(storytrack.snapshot_record(p, v)["approval"]["statement"], "I approve US-001 v1.")
-        self.assertIn("material_hash", self.events(p, "STORY_APPROVED")[0])
-        self.assertEqual(changes.check(p)["changes"], [], "an untouched approved story is not a change")
+        self.assertEqual(actrack.snapshot_record(p, v)["acceptance_criteria"], p.read_json(f"acceptance/approved/{fn('LIB-001')}.json")["acceptance_criteria"])
+        self.assertEqual(changemod.check(p, True)["unreviewed_ids"], [])
+        self.assertEqual(changemod.records(p), [])
 
-    def test_manual_json_edit_is_detected_and_explained_before_anything_moves(self):
-        p = self.two_approved()
-        s = self.approved_json(p)
-        s["acceptance_criteria"].append("Given a duplicate email, when they submit registration, then an error is shown.")
-        self.write_approved_json(p, s)
-        edited = (p.root / "stories" / "approved" / "json" / "US-001.json").read_bytes()
-
-        out = changes.check(p)
-
-        rec = out["changes"][0]
-        self.assertEqual((rec["type"], rec["status"], rec["origin"]), ("STORY_CHANGE", "DETECTED", "MANUAL"))
-        self.assertEqual(rec["subject"]["change_type"], "MANUAL_EDIT")
-        self.assertEqual(len(rec["changes"][0]["fields"]["acceptance_criteria"]["added"]), 1)
-        self.assertEqual(rec["impact"]["requirements"]["after"], ["REQ-001"])
+    # ------------------------------------------------- edit in the enriched copy
+    def test_edit_of_an_approved_criterion_in_the_enriched_copy_is_detected_before_anything_moves(self):
+        p = self.approved3()
+        self.edit_block(p, "Given a valid case for LIB-001, when the action is performed, then the expected outcome is produced.", EDITED)
+        before = self.jpath(p, "LIB-001").read_bytes()
+        out = changemod.check(p, True)
+        self.assertEqual(len(out["unreviewed_ids"]), 1)
+        rec = changemod.get(p, out["unreviewed_ids"][0])
+        self.assertEqual((rec["type"], rec["classification"], rec["origin"]), ("AC_CHANGE", "MATERIAL", "MANUAL"))
+        self.assertEqual(rec["subject"]["edited_via"], "enriched")
+        self.assertEqual(rec["subject"]["req_key"], K1)
+        self.assertEqual(rec["subject"]["observed"]["criteria"][0], EDITED)
+        self.assertEqual(len(rec["impact"]["criteria"]["added"]), 1)
+        self.assertEqual(len(rec["impact"]["criteria"]["removed"]), 1)
         self.assertEqual(rec["impact"]["approval_record"]["approver_name"], "Priya Nair")
-        self.assertTrue(rec["required_actions"])
-        # detection alone leaves the edited file exactly as the user left it
-        self.assertEqual((p.root / "stories" / "approved" / "json" / "US-001.json").read_bytes(), edited)
-        self.assertFalse(list((p.root / "stories" / "candidates").rglob("US-001*")))
+        # nothing downstream moved: approved record untouched, no candidate, the edit still sits in the copy
+        self.assertEqual(self.jpath(p, "LIB-001").read_bytes(), before)
+        self.assertFalse(p.exists(f"acceptance/candidates/{fn('LIB-001')}.json"))
+        self.assertIn(EDITED, self.enriched(p))
+        # a hand edit is never overwritten by later state changes while it waits
+        gapmod.reopen(p, "GAP-003", "rethink", "Priya Nair", "Product Owner")
+        self.assertIn(EDITED, self.enriched(p))
+        self.assertEqual(len(changemod.records(p)), 1)  # and recording is idempotent
+        self.assertEqual(changemod.check(p, True)["unreviewed_ids"], [rec["change_id"]])
 
-    def test_applying_a_material_manual_edit_keeps_everything_and_requires_reapproval(self):
-        p = self.two_approved()
-        approved_before = self.approved_json(p)
-        s = json.loads(json.dumps(approved_before))
-        s["acceptance_criteria"][0] = "Given a visitor with a valid email, when they register, then a member account is created and a welcome page is shown."
-        self.write_approved_json(p, s)
-        edited_bytes = (p.root / "stories" / "approved" / "json" / "US-001.json").read_bytes()
-        cid = changes.check(p)["changes"][0]["change_id"]
-
-        out = changes.apply(p, cid, *PO, "Seen. Keep the edit as a new version for review.")
-
-        # the approved version is back exactly as approved (approval record intact)
-        restored = self.approved_json(p)
-        self.assertEqual(restored["version"], 1)
-        self.assertEqual(restored["status"], "APPROVED")
-        self.assertEqual(restored["approval"], approved_before["approval"])
-        self.assertEqual(restored["acceptance_criteria"], approved_before["acceptance_criteria"])
-        self.assertEqual(storytrack.material_hash(restored), storytrack.current(storytrack.entry(p, "US-001"))["material_hash"])
-        # the manual edit is NOT discarded: it is a new candidate version, and the verbatim file is kept
-        cand = json.loads((p.root / "stories" / "candidates" / "json" / "US-001.json").read_text(encoding="utf-8"))
-        self.assertEqual((cand["version"], cand["status"], cand["approval"], cand["supersedes_version"]), (2, "CANDIDATE", None, 1))
+    def test_applying_an_enriched_edit_keeps_everything_and_requires_reapproval(self):
+        p = self.approved3()
+        self.edit_block(p, "when the action is performed, then the expected outcome is produced.", "when the action is performed, then a welcome page is shown.")
+        cid = changemod.check(p, True)["unreviewed_ids"][0]
+        with self.assertRaises(util.BAError):
+            changemod.apply(p, cid)
+        res = self.apply(p, cid)
+        eff = res["effects"]
+        self.assertEqual((eff["new_candidate_version"], eff["approved_version_restored"], eff["enriched_copy_restored"]), (2, 1, True))
+        kept = p.path(eff["edit_preserved_as"][0])
+        self.assertIn("welcome page", kept.read_text(encoding="utf-8"))  # the edit, verbatim
+        # approved version is back in the document and in the folder; v2 is a candidate
+        self.assertIn("then the expected outcome is produced", self.enriched(p))
+        self.assertNotIn("welcome page", self.enriched(p))
+        self.assertEqual(p.read_json(f"acceptance/approved/{fn('LIB-001')}.json")["version"], 1)
+        cand = p.read_json(f"acceptance/candidates/{fn('LIB-001')}.json")
+        self.assertEqual((cand["version"], cand["status"], cand["supersedes_version"]), (2, "CANDIDATE", 1))
         self.assertIn("welcome page", cand["acceptance_criteria"][0])
         self.assertEqual(cand["review_history"][-1]["action"], "MANUAL_EDIT_DETECTED")
-        self.assertEqual(cand["review_history"][-1]["change_id"], cid)
-        kept = out["effects"]["edit_preserved_as"]
-        self.assertEqual((p.root / kept[0]).read_bytes(), edited_bytes)
-        # audit + record
-        for t in ("STORY_MANUAL_EDIT_DETECTED", "STORY_REAPPROVAL_REQUIRED"):
-            self.assertEqual(len(self.events(p, t)), 1, t)
-        self.assertEqual(self.events(p, "STORY_MANUAL_EDIT_DETECTED")[0]["approved_version"], 1)
-        self.assertEqual(changes.get(p, cid)["status"], "APPLIED")
-        self.assertEqual(changes.get(p, cid)["items"][0]["kind"], "reapproval")
-        # completion cannot silently pass while the edit is unreviewed
-        self.assertTrue(any("US-001" in r for r in checks.completion(p)["reasons"]))
-        # reapproval closes the loop; v1's approval stays in history
-        stories.approve(p, "US-001", 2, "Approved the edited wording.", *PO)
-        changes.reconcile(p)
-        self.assertEqual(changes.get(p, cid)["status"], "RECONCILED")
-        hist = changes.story_history(p, "US-001")
-        self.assertEqual([v["version"] for v in hist["approved_versions"]], [1, 2])
-        self.assertEqual([v["in_force"] for v in hist["approved_versions"]], [False, True])
-        self.assertEqual(hist["approved_versions"][0]["approval_statement"], "I approve US-001 v1.")
-        self.assertTrue(p.exists("stories/archive/json/US-001.v1.json"))
-        self.assertEqual(changes.check(p)["changes"], [])
+        self.assertEqual([i["item_id"] for i in res["open_items"]], [f"reapproval:{K1}:v2"])
+        types = [e["event_type"] for e in p.audit_events()]
+        self.assertIn("AC_MANUAL_EDIT_DETECTED", types)
+        self.assertIn("AC_REAPPROVAL_REQUIRED", types)
+        self.assertEqual(changemod.check(p, True)["unreviewed_ids"], [])
+        # approving v2 completes the change
+        acs.approve(p, K1, 2, "Approve v2.", "Priya Nair", "Product Owner")
+        changemod.reconcile(p)
+        self.assertEqual(changemod.get(p, cid)["status"], "RECONCILED")
+        self.assertIn("welcome page", self.enriched(p))
+        self.assertEqual(checks.validate_project(p)["errors"], [])
 
-    def test_manual_edit_of_the_markdown_copy_is_detected_too(self):
-        p = self.two_approved()
-        md = p.root / "stories" / "approved" / "md" / "US-001.md"
-        text = md.read_text(encoding="utf-8")
-        self.assertIn("1. Given a visitor with a valid email", text)
-        md.write_text(text.replace("then a member account is created.", "then a member account is created and a welcome email is queued."), encoding="utf-8")
-        rec = changes.check(p)["changes"][0]
-        self.assertEqual(rec["subject"]["edited_via"], "markdown")
-        self.assertIn("acceptance_criteria", rec["changes"][0]["fields"])
-        changes.apply(p, rec["change_id"], *PO, "apply")
-        cand = json.loads((p.root / "stories" / "candidates" / "json" / "US-001.json").read_text(encoding="utf-8"))
-        self.assertIn("welcome email is queued", cand["acceptance_criteria"][0])
-        self.assertEqual(cand["version"], 2)
-        # the JSON of the approved version was never wrong, and its .md is regenerated from it
-        self.assertNotIn("welcome email", (p.root / "stories" / "approved" / "md" / "US-001.md").read_text(encoding="utf-8"))
-        self.assertEqual(self.approved_json(p)["version"], 1)
+    def test_two_edits_in_one_file_are_both_kept_and_the_copy_is_restored_after_the_last(self):
+        p = self.approved3()
+        self.edit_block(p, "Given a valid case for LIB-001, when the action is performed, then the expected outcome is produced.", "Given one, when it runs, then it is edited once.")
+        self.edit_block(p, "Given a valid case for LIB-003, when the action is performed, then the expected outcome is produced.", "Given three, when it runs, then it is edited thrice.")
+        ids = changemod.check(p, True)["unreviewed_ids"]
+        self.assertEqual(len(ids), 2)
+        first = self.apply(p, ids[0])
+        self.assertFalse(first["effects"]["enriched_copy_restored"])  # the other edit is still waiting
+        self.assertIn("edited thrice", self.enriched(p))
+        self.assertEqual(changemod.check(p, True)["unreviewed_ids"], [ids[1]])
+        second = self.apply(p, ids[1])
+        self.assertTrue(second["effects"]["enriched_copy_restored"])
+        t = self.enriched(p)
+        self.assertNotIn("edited once", t)
+        self.assertNotIn("edited thrice", t)
+        c1 = p.read_json(f"acceptance/candidates/{fn('LIB-001')}.json")
+        c3 = p.read_json(f"acceptance/candidates/{fn('LIB-003')}.json")
+        self.assertIn("edited once", c1["acceptance_criteria"][0])
+        self.assertIn("edited thrice", c3["acceptance_criteria"][0])
 
-    def test_formatting_only_story_edits_do_not_touch_the_approval(self):
-        p = self.two_approved()
-        before = self.approved_json(p)
-        s = json.loads(json.dumps(before))
-        s["title"] = "  Register   as a   member  "
-        s["acceptance_criteria"][1] = "Given an invalid email,   when they submit registration,  then an error is shown and no account is created.  "
-        self.write_approved_json(p, s)
-        md = p.root / "stories" / "approved" / "md" / "US-002.md"
-        md.write_text(md.read_text(encoding="utf-8").replace("### User Story", "\n\n### User Story\n"), encoding="utf-8")
-        out = changes.check(p)
-        self.assertFalse(out["requires_review"])
+    def test_editing_only_generated_text_is_restored_not_a_review(self):
+        p = self.approved3()
+        self.edit_block(p, "*Approved by Priya Nair (Product Owner)", "*Approved by Somebody Else (CEO)")
+        out = changemod.check(p, True)
         self.assertEqual(out["unreviewed_ids"], [])
-        self.assertEqual(len(out["formatting_only_accepted"]), 2)
-        self.assertTrue(all(r["classification"] == "FORMATTING_ONLY" and r["status"] == "RECORDED" for r in out["formatting_only_accepted"]))
-        self.assertEqual(self.approved_json(p)["version"], 1)
-        self.assertEqual(self.approved_json(p)["approval"], before["approval"])
-        self.assertFalse(list((p.root / "stories" / "candidates").rglob("US-*")))
-        self.assertEqual(len(self.events(p, "STORY_FORMATTING_CHANGE_RECORDED")), 2)
-        self.assertEqual(changes.check(p)["formatting_only_accepted"], [], "accepted once, not re-flagged")
-        self.assertTrue(checks.validate_project(p)["ok"], checks.validate_project(p)["errors"])
+        self.assertNotIn("Somebody Else", self.enriched(p))
+        self.assertEqual(changemod.records(p)[-1]["status"], "RECORDED")
+
+    def test_enriched_edit_that_is_not_given_when_then_is_captured_but_cannot_be_approved(self):
+        p = self.approved3()
+        self.edit_block(p, "Given a valid case for LIB-002, when the action is performed, then the expected outcome is produced.", "It should just work nicely for everyone.")
+        cid = changemod.check(p, True)["unreviewed_ids"][0]
+        res = self.apply(p, cid)
+        self.assertEqual(res["effects"]["new_candidate_version"], 2)
+        self.assertEqual(self.err(acs.approve, p, K2, 2, "ok", "Priya Nair", "Product Owner").code, "ACCEPTANCE_FORMAT")
+
+    def test_stale_enriched_record_is_refused(self):
+        p = self.approved3()
+        self.edit_block(p, "when the action is performed, then the expected outcome is produced.", "when the action is performed, then A happens.")
+        cid = changemod.check(p, True)["unreviewed_ids"][0]
+        self.edit_block(p, "then A happens.", "then B happens.")
+        self.assertEqual(self.err(changemod.apply, p, cid, "Priya Nair", "Product Owner", "ok").code, "CHANGE_RECORD_STALE")
+        out = changemod.check(p, True)
+        self.assertEqual(changemod.get(p, cid)["status"], "SUPERSEDED")
+        self.assertEqual(len(out["unreviewed_ids"]), 1)
+
+    def test_putting_the_text_back_reverts_an_unapplied_detection(self):
+        p = self.approved3()
+        self.edit_block(p, "then the expected outcome is produced.", "then A happens.")
+        cid = changemod.check(p, True)["unreviewed_ids"][0]
+        self.edit_block(p, "then A happens.", "then the expected outcome is produced.")
+        out = changemod.check(p, True)
+        self.assertEqual(out["unreviewed_ids"], [])
+        self.assertEqual(changemod.get(p, cid)["status"], "REVERTED")
+
+    def test_reverting_an_edit_keeps_the_approval_and_the_discarded_copy(self):
+        p = self.approved3()
+        self.edit_block(p, "then the expected outcome is produced.", "then A happens.")
+        cid = changemod.check(p, True)["unreviewed_ids"][0]
+        self.apply(p, cid)
+        with self.assertRaises(util.BAError):
+            changemod.revert_edit(p, K1, "", "Priya Nair", "Product Owner")
+        r = changemod.revert_edit(p, K1, "The edit was a mistake.", "Priya Nair", "Product Owner")
+        self.assertEqual((r["discarded_version"], r["approved_version_in_force"]), (2, 1))
+        self.assertFalse(p.exists(f"acceptance/candidates/{fn('LIB-001')}.json"))
+        self.assertTrue(p.exists(f"acceptance/archive/{fn('LIB-001')}.v2.json"))
+        self.assertEqual(changemod.get(p, cid)["status"], "RECONCILED")
+        self.assertEqual(self.err(changemod.revert_edit, p, K1, "again", "Priya Nair", "Product Owner").code, "NOTHING_TO_REVERT")
+        self.assertEqual(self.err(changemod.revert_edit, p, K2, "x", "Priya Nair", "Product Owner").code, "NOTHING_TO_REVERT")
+
+    def test_enriched_edit_reopens_a_completed_workflow(self):
+        p = self.to_ac_stage()
+        acs.add_acs(p, [self.ac_item(r) for r in ("LIB-001", "LIB-002", "LIB-003", "LIB-004", "LIB-005", "LIB-006", "LIB-007", "LIB-008", "LIB-009")])
+        for r in ("LIB-001", "LIB-002", "LIB-003", "LIB-004", "LIB-005", "LIB-006", "LIB-007", "LIB-008", "LIB-009"):
+            self.approve(p, r)
+        checks.complete_workflow(p)
+        self.assertEqual(p.state["stage"], "COMPLETED")
+        self.edit_block(p, "Given a valid case for LIB-001, when the action is performed, then the expected outcome is produced.", EDITED)
+        self.apply(p, changemod.check(p, True)["unreviewed_ids"][0])
+        self.assertEqual(p.state["stage"], "WAITING_FOR_AC_REVIEW")
+        self.assertFalse(checks.completion(p)["complete"])
+
+    # ------------------------------------------------------ edit of the record
+    def test_manual_json_edit_is_detected_and_explained_before_anything_moves(self):
+        p = self.approved3()
+        self.edit_json(p, "LIB-001", lambda d: d["acceptance_criteria"].append("Given an admin, when they register a member, then it is audited."))
+        out = changemod.check(p, True)
+        rec = changemod.get(p, out["unreviewed_ids"][0])
+        self.assertEqual(rec["subject"]["change_type"], "MANUAL_EDIT")
+        self.assertEqual(rec["subject"]["edited_via"], "json")
+        self.assertEqual(rec["impact"]["criteria"]["added"], ["Given an admin, when they register a member, then it is audited."])
+        self.assertIn("acceptance_criteria", rec["impact"]["fields_changed"])
+        self.assertEqual(len(p.read_json(f"acceptance/approved/{fn('LIB-001')}.json")["acceptance_criteria"]), 3)  # not touched yet
+        self.assertIn("approved criteria on disk differ", " ".join(checks.validate_project(p)["warnings"]))
+
+    def test_applying_a_json_edit_restores_the_approval_and_makes_the_edit_the_next_version(self):
+        p = self.approved3()
+        approved = p.read_json(f"acceptance/approved/{fn('LIB-001')}.json")
+        self.edit_json(p, "LIB-001", lambda d: d["acceptance_criteria"].append("Given an admin, when they register a member, then it is audited."))
+        cid = changemod.check(p, True)["unreviewed_ids"][0]
+        res = self.apply(p, cid)
+        eff = res["effects"]
+        self.assertEqual((eff["new_candidate_version"], eff["approved_version_restored"]), (2, 1))
+        self.assertTrue(p.path(eff["edit_preserved_as"][0]).exists())
+        restored = p.read_json(f"acceptance/approved/{fn('LIB-001')}.json")
+        self.assertEqual(restored["acceptance_criteria"], approved["acceptance_criteria"])
+        cand = p.read_json(f"acceptance/candidates/{fn('LIB-001')}.json")
+        self.assertEqual(len(cand["acceptance_criteria"]), 3)
+        self.assertEqual(changemod.check(p, True)["unreviewed_ids"], [])
+
+    def test_formatting_only_json_edits_do_not_touch_the_approval(self):
+        p = self.approved3()
+        self.edit_json(p, "LIB-001", lambda d: d.__setitem__("acceptance_criteria", [c + "  " for c in d["acceptance_criteria"]]))
+        out = changemod.check(p, True)
+        self.assertEqual(out["unreviewed_ids"], [])
+        self.assertEqual(len(out["formatting_only_accepted"]), 1)
+        self.assertEqual(changemod.records(p)[-1]["classification"], "FORMATTING_ONLY")
+        self.assertEqual(changemod.check(p, True)["formatting_only_accepted"], [])  # accepted once
 
     def test_altering_the_approval_record_by_hand_is_not_accepted(self):
-        p = self.two_approved()
-        s = self.approved_json(p)
-        s["approval"]["approver_name"] = "Somebody Else"
-        s["approval"]["statement"] = "I approve everything."
-        self.write_approved_json(p, s)
-        rec = changes.check(p)["changes"][0]
+        p = self.approved3()
+        self.edit_json(p, "LIB-002", lambda d: d["approval"].__setitem__("approver_name", "Somebody Else"))
+        cid = changemod.check(p, True)["unreviewed_ids"][0]
+        rec = changemod.get(p, cid)
         self.assertEqual(rec["subject"]["change_type"], "APPROVAL_ALTERED")
-        changes.apply(p, rec["change_id"], *PO, "apply")
-        s = self.approved_json(p)
-        self.assertEqual(s["approval"]["approver_name"], "Priya Nair")
-        self.assertTrue(s["impact_review"]["pending"], "the story is flagged until a person reviews it")
-        self.assertIn("altered by hand", s["impact_review"]["reason"])
-        self.assertFalse(list((p.root / "stories" / "candidates").rglob("US-001*")), "no material edit, so no new version")
-        self.assertTrue(any(p.root.joinpath("snapshots", "stories").glob("US-001.observed-*.json")), "the altered file is kept")
+        self.assertTrue(rec["subject"]["control_fields_altered"])
+        res = self.apply(p, cid)
+        self.assertIsNone(res["effects"]["new_candidate_version"])
+        self.assertEqual(p.read_json(f"acceptance/approved/{fn('LIB-002')}.json")["approval"]["approver_name"], "Priya Nair")
 
-    def test_linked_requirements_changed_by_hand_show_up_in_the_impact(self):
-        p = self.two_approved()
-        s = self.approved_json(p)
-        s["requirement_ids"] = ["REQ-001", "REQ-002"]
-        self.write_approved_json(p, s)
-        rec = changes.check(p)["changes"][0]
-        req = rec["impact"]["requirements"]
-        self.assertEqual((req["added"], req["removed"]), (["REQ-002"], []))
-        self.assertEqual([x["story_id"] for x in rec["impact"]["stories_sharing_requirements"]], ["US-002"])
+    def test_corrupt_json_is_preserved_and_the_approval_restored(self):
+        p = self.approved3()
+        self.jpath(p, "LIB-001").write_text("{ not json", encoding="utf-8")
+        self.assertEqual(p.unreadable_ac_files(), [f"acceptance/approved/{fn('LIB-001')}.json"])
+        self.assertTrue(any("not valid JSON" in e for e in checks.validate_project(p)["errors"]))
+        checks.status_report(p)  # must not crash
+        cid = changemod.check(p, True)["unreviewed_ids"][0]
+        self.assertEqual(changemod.get(p, cid)["subject"]["change_type"], "UNREADABLE")
+        res = self.apply(p, cid)
+        self.assertTrue(p.path(res["effects"]["edit_preserved_as"][0]).read_text(encoding="utf-8").startswith("{ not json"))
+        self.assertEqual(p.read_json(f"acceptance/approved/{fn('LIB-001')}.json")["version"], 1)
+        self.assertEqual(checks.validate_project(p)["errors"], [])
 
-    def test_deleted_approved_story_is_detected_preserved_and_restorable(self):
-        p = self.two_approved()
-        original = self.approved_json(p, "US-002")
-        (p.root / "stories" / "approved" / "json" / "US-002.json").unlink()
-        (p.root / "stories" / "approved" / "md" / "US-002.md").unlink()
-        rec = changes.check(p)["changes"][0]
+    def test_damaged_snapshot_is_reported_and_never_trusted(self):
+        p = self.approved3()
+        v = actrack.current(actrack.entry(p, K1))
+        snap = p.path(v["snapshot"])
+        d = json.loads(snap.read_text(encoding="utf-8"))
+        d["acceptance_criteria"] = ["Given forged, when it is read, then it is trusted wrongly."]
+        snap.write_text(json.dumps(d), encoding="utf-8")
+        self.assertIsNone(actrack.snapshot_record(p, v))
+        self.assertTrue(any("snapshot" in w and "damaged" in w for w in checks.validate_project(p)["warnings"]))
+        self.jpath(p, "LIB-001").unlink()
+        cid = changemod.check(p, True)["unreviewed_ids"][0]
+        self.apply(p, cid)
+        self.assertEqual(self.err(changemod.restore_ac, p, K1, "put it back", "Priya Nair", "Product Owner").code, "SNAPSHOT_UNAVAILABLE")
+
+    # ------------------------------------------------------ deletion / restore
+    def test_deleted_approved_ac_is_detected_preserved_and_restorable(self):
+        p = self.approved3()
+        self.jpath(p, "LIB-002").unlink()
+        cid = changemod.check(p, True)["unreviewed_ids"][0]
+        rec = changemod.get(p, cid)
         self.assertEqual(rec["subject"]["change_type"], "DELETED")
-        cid = rec["change_id"]
-        changes.apply(p, cid, *PO, "Seen.")
-        self.assertEqual(storytrack.entry(p, "US-002")["status"], storytrack.DELETED)
-        self.assertTrue(p.exists(storytrack.current(storytrack.entry(p, "US-002"))["snapshot"]), "approved record kept")
-        self.assertEqual(len(self.events(p, "STORY_DELETION_DETECTED")), 1)
-        self.assertEqual(checks.traceability(p)["not_covered_by_approved_story"].count("REQ-002"), 1)
-        again = changes.check(p)
-        self.assertEqual(again["changes"], [], "a recorded deletion is not re-detected on every check")
-        self.assertEqual([c["change_id"] for c in again["awaiting_reconciliation"]], [cid], "it stays open until someone decides")
-        # a new story must never reuse the deleted story's id
-        self.assertEqual(stories.add_stories(p, [self.story_item("Another", ("REQ-003",),
-                                                                 acceptance_criteria=["Given six books, when a seventh is borrowed, then it is refused."])])["created"], ["US-003"])
-        self.assertEqual(code_of(changes.restore_story, p, "US-002", "", *PO), "REASON_REQUIRED")
-        out = changes.restore_story(p, "US-002", "Deleted by mistake.", *PO)
-        restored = self.approved_json(p, "US-002")
-        self.assertEqual(restored["approval"], original["approval"])
-        self.assertEqual(restored["acceptance_criteria"], original["acceptance_criteria"])
-        self.assertEqual(out["status"], "APPROVED")
-        self.assertEqual(changes.get(p, cid)["status"], "RECONCILED")
-        self.assertEqual(changes.check(p)["changes"], [])
+        res = self.apply(p, cid)
+        self.assertEqual(res["effects"]["snapshot_kept"], True)
+        self.assertEqual(actrack.entry(p, K2)["status"], actrack.DELETED)
+        self.assertEqual([i["kind"] for i in res["open_items"]], ["ac_removal"])
+        self.assertIn("LIB-002", checks.completion(p)["reasons"][-1] + " ".join(checks.completion(p)["reasons"]))
+        with self.assertRaises(util.BAError):
+            changemod.restore_ac(p, K2, "", "Priya Nair", "Product Owner")
+        r = changemod.restore_ac(p, K2, "Deleted by accident.", "Priya Nair", "Product Owner")
+        self.assertEqual(r["version"], 1)
+        self.assertTrue(self.jpath(p, "LIB-002").exists())
+        self.assertEqual(actrack.entry(p, K2)["status"], actrack.TRACKED)
+        self.assertEqual(changemod.get(p, cid)["status"], "RECONCILED")
+        self.assertEqual(changemod.check(p, True)["unreviewed_ids"], [])
+        self.assertIn(K2, self.enriched(p))
 
-    def test_confirming_a_story_removal_is_a_recorded_decision(self):
-        p = self.two_approved()
-        (p.root / "stories" / "approved" / "json" / "US-002.json").unlink()
-        cid = changes.check(p)["changes"][0]["change_id"]
-        changes.apply(p, cid, *PO, "Seen.")
-        changes.dismiss(p, cid, "story_removal:US-002", "Out of scope for release 1.", *PO)
-        self.assertEqual(storytrack.entry(p, "US-002")["status"], storytrack.REMOVAL_CONFIRMED)
-        self.assertEqual(changes.get(p, cid)["status"], "RECONCILED")
-        self.assertEqual(changes.check(p)["changes"], [])
-        self.assertTrue(p.exists(storytrack.current(storytrack.entry(p, "US-002"))["snapshot"]), "history is kept even when removal is confirmed")
+    def test_confirming_a_removal_is_a_recorded_decision(self):
+        p = self.approved3()
+        self.jpath(p, "LIB-002").unlink()
+        cid = changemod.check(p, True)["unreviewed_ids"][0]
+        self.apply(p, cid)
+        self.assertEqual(self.err(changemod.dismiss, p, cid, "ac_removal:nothing", "no", "Priya Nair", "Product Owner").code, "UNKNOWN_ITEM")
+        out = changemod.dismiss(p, cid, f"ac_removal:{K2}", "These criteria were superseded by another requirement.", "Priya Nair", "Product Owner")
+        self.assertEqual((out["state"], out["change_status"]), ("DISMISSED", "RECONCILED"))
+        self.assertEqual(actrack.entry(p, K2)["status"], actrack.REMOVAL_CONFIRMED)
+        self.assertEqual(changemod.check(p, True)["unreviewed_ids"], [])
+        self.assertTrue(any(e["event_type"] == "CHANGE_ITEM_DISMISSED" for e in p.audit_events()))
 
-    def test_reverting_a_manual_edit_keeps_the_approval_and_the_discarded_copy(self):
-        p = self.two_approved()
-        s = self.approved_json(p)
-        s["title"] = "Register with email"
-        self.write_approved_json(p, s)
-        cid = changes.check(p)["changes"][0]["change_id"]
-        changes.apply(p, cid, *PO, "apply")
-        self.assertEqual(code_of(changes.revert_edit, p, "US-001", "", *PO), "REASON_REQUIRED")
-        out = changes.revert_edit(p, "US-001", "The old title was right.", *PO)
-        self.assertEqual(out["approved_version_in_force"], 1)
-        self.assertEqual(self.approved_json(p)["title"], "Register as a member")
-        self.assertFalse(list((p.root / "stories" / "candidates").rglob("US-001*")))
-        self.assertEqual(json.loads((p.root / out["discarded_copy"]).read_text(encoding="utf-8"))["title"], "Register with email")
-        self.assertEqual(changes.get(p, cid)["status"], "RECONCILED")
-        self.assertEqual(len(self.events(p, "STORY_EDIT_REVERTED")), 1)
+    def test_untracked_record_dropped_into_approved_is_not_trusted(self):
+        p = self.to_acs(1)
+        src = p.path(f"acceptance/candidates/{fn('LIB-001')}.json")
+        d = json.loads(src.read_text(encoding="utf-8"))
+        d["status"], d["approval"] = "APPROVED", {"version": 1, "decision": "APPROVED", "at_ist": "2026-10-22T19:00:00+05:30", "approver_name": "X", "approver_role": "Y", "statement": "fake"}
+        p.path(f"acceptance/approved/{fn('LIB-001')}.json").write_text(json.dumps(d), encoding="utf-8")
+        src.unlink()
+        cid = changemod.check(p, True)["unreviewed_ids"][0]
+        self.assertEqual(changemod.get(p, cid)["subject"]["change_type"], "UNTRACKED_APPROVED")
+        self.apply(p, cid)
+        self.assertFalse(p.exists(f"acceptance/approved/{fn('LIB-001')}.json"))
+        self.assertTrue(p.exists(f"acceptance/candidates/{fn('LIB-001')}.json"))
+        self.assertNotIn(K1, self.enriched(p))
 
-    def test_user_putting_the_file_back_reverts_an_unapplied_detection(self):
-        p = self.two_approved()
-        path = p.root / "stories" / "approved" / "json" / "US-001.json"
-        original = path.read_bytes()
-        s = self.approved_json(p)
-        s["title"] = "Something else entirely"
-        self.write_approved_json(p, s)
-        cid = changes.check(p)["changes"][0]["change_id"]
-        path.write_bytes(original)
-        out = changes.check(p)
+    def test_approvals_made_before_tracking_existed_are_adopted_not_flagged(self):
+        p = self.approved3()
+        p.path("snapshots/ac/index.json").unlink()
+        out = changemod.check(p, True)
         self.assertEqual(out["unreviewed_ids"], [])
-        self.assertEqual(changes.get(p, cid)["status"], "REVERTED")
+        self.assertEqual(sorted(actrack.known_keys(p)), sorted([K1, K2, K3]))
+        self.assertTrue(any(e["event_type"] == "AC_TRACKING_ADOPTED" for e in p.audit_events()))
 
-    def test_ba_agent_edit_of_an_approved_story_is_tracked_with_history(self):
-        p = self.two_approved()
-        out = stories.edit(p, "US-001", {"acceptance_criteria": [
-            "Given a visitor with a valid email, when they submit registration, then a member account is created.",
-            "Given an invalid email, when they submit registration, then an error is shown and no account is created.",
-            "Given a duplicate email, when they register, then they are told the email is already in use."]}, "Reviewer asked for the duplicate case.")
-        self.assertEqual(out["new_version"], 2)
-        self.assertTrue(out["approved_version_still_in_force"])
-        rec = changes.records(p)[-1]
-        self.assertEqual((rec["origin"], rec["classification"], rec["status"]), ("BA_AGENT", "MATERIAL", "APPLIED"))
-        self.assertIn("duplicate", " ".join(rec["changes"][0]["fields"]["acceptance_criteria"]["added"]))
-        self.assertEqual(rec["items"][0]["item_id"], "reapproval:US-001:v2")
-        self.assertEqual(self.approved_json(p)["version"], 1, "v1 approval untouched until v2 is approved")
-        stories.approve(p, "US-001", 2, "ok", *PO)
-        changes.reconcile(p)
-        self.assertEqual(changes.get(p, rec["change_id"])["status"], "RECONCILED")
-        self.assertEqual(changes.check(p)["changes"], [], "the agent's own edit is not mistaken for a manual one")
+    # ---------------------------------------------------------- agent edits
+    def test_ba_agent_edit_of_an_approved_record_is_tracked_with_history(self):
+        p = self.approved3()
+        r = acs.edit(p, K1, {"acceptance_criteria": [EDITED]}, "wording")
+        rec = [c for c in changemod.records(p) if c["origin"] == "BA_AGENT"][0]
+        self.assertEqual((rec["status"], rec["subject"]["new_version"]), ("APPLIED", r["new_version"]))
+        self.assertEqual(changemod.check(p, True)["unreviewed_ids"], [])  # BA Agent changes are never re-detected as manual edits
+        hist = changemod.ac_history(p, K1)
+        self.assertEqual(hist["awaiting_review"][0]["version"], 2)
+        self.assertEqual(hist["changes"][0]["origin"], "BA_AGENT")
+        self.assertEqual(checks.completion(p)["complete"], False)
 
-    def test_ba_agent_formatting_only_edit_keeps_the_approval_and_version(self):
-        p = self.two_approved()
-        before = self.approved_json(p)
-        out = stories.edit(p, "US-001", {"title": "  Register   as a member "}, "Tidy whitespace.")
-        self.assertTrue(out["formatting_only"])
-        self.assertEqual(out["new_version"], 1)
-        after = self.approved_json(p)
-        self.assertEqual((after["version"], after["status"], after["approval"]), (1, "APPROVED", before["approval"]))
-        rec = changes.records(p)[-1]
-        self.assertEqual((rec["origin"], rec["classification"], rec["status"]), ("BA_AGENT", "FORMATTING_ONLY", "RECORDED"))
-        self.assertFalse(list((p.root / "stories" / "candidates").rglob("US-001*")))
-        self.assertEqual(changes.check(p)["changes"], [])
-        self.assertTrue(checks.validate_project(p)["ok"], checks.validate_project(p)["errors"])
+    def test_history_of_unknown_requirement(self):
+        p = self.approved3()
+        self.assertEqual(self.err(changemod.ac_history, p, key("LIB-005")).code, "UNKNOWN_AC")
 
-    def test_untracked_story_dropped_into_approved_is_not_trusted(self):
-        p = self.two_approved()
-        s = self.approved_json(p, "US-002")
-        s["story_id"], s["title"] = "US-009", "Smuggled in"
-        (p.root / "stories" / "approved" / "json" / "US-009.json").write_text(json.dumps(s), encoding="utf-8")
-        rec = changes.check(p)["changes"][0]
-        self.assertEqual(rec["subject"]["change_type"], "UNTRACKED_APPROVED")
-        changes.apply(p, rec["change_id"], *PO, "apply")
-        self.assertFalse((p.root / "stories" / "approved" / "json" / "US-009.json").exists())
-        cand = json.loads((p.root / "stories" / "candidates" / "json" / "US-009.json").read_text(encoding="utf-8"))
-        self.assertEqual((cand["status"], cand["approval"]), ("CANDIDATE", None))
+    # ---------------------------------------------------------------- misc
+    def test_unknown_change_and_ambiguous_apply_are_refused(self):
+        p = self.approved3()
+        self.assertEqual(self.err(changemod.get, p, "CHG-009").code, "UNKNOWN_CHANGE")
+        self.assertEqual(self.err(changemod.apply, p, None, "Priya Nair", "Product Owner", "ok").code, "CHANGE_ID_REQUIRED")
+        self.edit_block(p, "then the expected outcome is produced.", "then A happens.", )
+        self.edit_block(p, "Given a valid case for LIB-003, when the action is performed, then the expected outcome is produced.", "Given x, when y, then z happens.")
+        changemod.check(p, True)
+        e = self.err(changemod.apply, p, None, "Priya Nair", "Product Owner", "ok")
+        self.assertEqual(e.code, "CHANGE_ID_REQUIRED")
 
-    def test_legacy_approved_stories_are_adopted_not_flagged(self):
-        p = self.two_approved()
-        import shutil
-        shutil.rmtree(p.root / "snapshots" / "stories")
-        out = changes.check(p)
-        self.assertEqual(out["changes"], [])
-        self.assertEqual(len(self.events(p, "STORY_TRACKING_ADOPTED")), 2)
-        self.assertIsNotNone(storytrack.entry(p, "US-001"))
+    def test_guard_blocks_until_an_ac_change_is_applied(self):
+        p = self.approved3()
+        self.edit_block(p, "then the expected outcome is produced.", "then A happens.")
+        e = self.err(changemod.guard, p, "ac edit")
+        self.assertEqual(e.code, "CHANGES_UNREVIEWED")
+        self.assertIn("CHG-001", e.message)
+        self.apply(p, e.details["change_ids"][0])
+        changemod.guard(p, "ac edit")  # applied: the workflow may continue
 
-
-# =========================================== workflow: guard, resume, traceability
-
-class WorkflowChangeTests(ChangeTest):
-    def test_cli_blocks_writes_until_a_detected_change_is_shown_and_applied(self):
-        p = self.to_baseline()
-        self.edit_brd(lambda t: t.replace("within 14 days", "within 21 days"))
-        for argv in (["story", "add", "--file", str(self.tmp / "x.json")], ["baseline", "create"], ["gaps", "commit", "--cross-pass-done"],
-                     ["story", "next"], ["gaps", "next"]):
-            rc, out = self.ba(p, *argv)
-            self.assertEqual((rc, out["error"]["code"]), (1, "CHANGES_UNREVIEWED"), argv)
-            self.assertEqual(out["error"]["details"]["change_ids"], ["CHG-001"])
-            self.assertIn("2.2", json.dumps(out["error"]["details"]["changes"][0]["impact"]))
-        self.assertEqual(p.requirement("REQ-004")["status"], "ACTIVE", "nothing downstream changed while blocked")
-        self.assertEqual(len(changes.records(p)), 1, "the detection was recorded once, by the first blocked command")
-        rc, out = self.ba(p, "changes", "apply", "--id", "CHG-001", "--by-name", "Priya Nair", "--by-role", "Product Owner",
-                          "--statement", "Apply it.")
-        self.assertEqual((rc, out["status"]), (0, "APPLIED"))
-        rc, out = self.ba(p, "baseline", "create")
-        self.assertEqual(out["error"]["code"], "IMPACT_REVIEW_PENDING", "after apply the existing impact-review rules take over")
-
-    def test_cli_source_check_only_explains(self):
-        p = self.to_baseline()
-        self.edit_brd(lambda t: t.replace("within 14 days", "within 21 days"))
-        rc, out = self.ba(p, "source", "check")
-        self.assertEqual(rc, 0)
-        self.assertEqual(out["changes"][0]["status"], "DETECTED")
-        self.assertIn("NOTHING downstream", out["next"])
-        self.assertEqual(Project.open(p.root).requirement("REQ-004")["status"], "ACTIVE")
-        rc, out = self.ba(p, "changes", "check", "--no-record")
-        self.assertEqual(out["changes"][0]["change_id"], "CHG-001")
-        rc, prev = self.ba(p, "changes", "check", "--no-record")
-        self.assertEqual(len(changes.records(p)), 1)
-
-    def test_formatting_only_change_never_blocks_the_workflow(self):
-        p = self.to_baseline()
-        self.edit_brd(lambda t: t.replace("A member may borrow", "A member **may** borrow"))
-        rc, out = self.ba(p, "story", "add", "--file", str(self.tmp / "stories.json"))
-        self.assertNotEqual(out.get("error", {}).get("code"), "CHANGES_UNREVIEWED")
-        self.assertEqual([r["classification"] for r in changes.records(p)], ["FORMATTING_ONLY"])
-
-    def test_triage_runs_the_change_check_and_reports_without_blocking(self):
-        p = self.two_approved()
-        stories.add_stories(p, [self.story_item("Over-limit message", ("REQ-003",),
-                                                acceptance_criteria=["Given five loans, when a sixth is attempted, then it is refused."])])
-        self.edit_brd(lambda t: t.replace("within 14 days", "within 21 days"))
-        rc, out = self.ba(p, "story", "triage")
-        self.assertEqual(rc, 0)
-        self.assertEqual(out["change_check"]["unreviewed"], ["CHG-001"])
-        self.assertIn("NOTHING downstream", out["change_check"]["note"])
-        rc, out = self.ba(p, "gaps", "triage")
-        self.assertEqual(out["change_check"]["unreviewed"], ["CHG-001"])
-
-    def test_status_reports_changes_read_only_and_points_to_the_check(self):
-        p = self.two_approved()
-        self.edit_brd(lambda t: t.replace("within 14 days", "within 21 days"))
-        rc, st = self.ba(p, "status", "--json")
-        self.assertEqual(st["changes"]["undetected"]["source"], "MATERIAL")
-        self.assertIn("changes check", st["next_action"])
-        self.assertEqual(changes.records(p), [], "status writes no change record")
-        rc, txt = self.ba(p, "status")
-        self.assertIn("NOT YET CHECKED", txt["raw"])
+    def test_status_and_trace_report_changes_read_only(self):
+        p = self.approved3()
+        self.edit_block(p, "then the expected outcome is produced.", "then A happens.")
+        r = checks.status_report(p)  # read-only: nothing recorded
+        self.assertEqual(changemod.records(p), [])
+        self.assertEqual(r["changes"]["undetected"]["enriched"], ["membership.md"])
+        self.assertIn("changes check", r["next_action"])
+        changemod.check(p, True)
+        r = checks.status_report(p)
+        self.assertEqual(len(r["changes"]["unreviewed"]), 1)
+        self.assertIn("await the user's decision", r["next_action"])
+        t = checks.traceability(p, write=True)
+        self.assertEqual(len(t["change_impact"]["unreviewed"]), 1)
+        self.assertIn("Awaiting your decision: CHG-001", p.path("reports/traceability-report.md").read_text(encoding="utf-8"))
 
     def test_resume_in_a_new_session_keeps_detected_and_applied_changes(self):
-        p = self.two_approved()
-        self.edit_brd(lambda t: t.replace("within 14 days", "within 21 days"))
-        self.ba(p, "changes", "check")
-        # --- new session: nothing in memory
-        p2 = Project.open(p.root)
-        rc, st = self.ba(p2, "status", "--json")
-        self.assertEqual([c["change_id"] for c in st["changes"]["unreviewed"]], ["CHG-001"])
-        self.assertIn("await the user's decision", st["next_action"])
-        self.assertEqual(self.ba(p2, "changes", "check")[1]["changes"][0]["change_id"], "CHG-001", "no duplicate record after resuming")
-        self.ba(p2, "changes", "apply", "--id", "CHG-001", "--by-name", "Priya Nair", "--by-role", "Product Owner", "--statement", "ok")
-        # --- another new session in the middle of the review
-        p3 = Project.open(p.root)
-        rec = changes.get(p3, "CHG-001")
-        self.assertEqual(rec["status"], "APPLIED")
-        self.assertTrue([i for i in rec["items"] if i["state"] == "OPEN"])
-        rc, st = self.ba(p3, "status", "--json")
-        self.assertEqual(st["changes"]["awaiting_reconciliation"][0]["change_id"], "CHG-001")
-        self.assertEqual(st["changes"]["stale"]["requirements_needing_review"], ["REQ-003", "REQ-004"])
-        self.assertIn("reassess", st["next_action"].lower())
-        # finish the work in the resumed session
-        reqs.update_requirement(p3, "REQ-004", {"statement": "Borrowed books must be returned within 21 days.",
-                                                "source_excerpt": "Borrowed books must be returned within 21 days."}, "BRD", "source-change")
-        reqs.confirm_requirement(p3, "REQ-003", "Quoted text is unchanged.")
-        rc, out = self.ba(p3, "source", "accept", "--by-name", "Priya Nair", "--by-role", "Product Owner", "--statement", "Accepted")
-        self.assertEqual(rc, 0)
-        self.assertEqual(out["changes_reconciled"] if "changes_reconciled" in out else [], [])
-        done = {i["item_id"]: i["state"] for i in changes.get(Project.open(p.root), "CHG-001")["items"]}
-        self.assertEqual(done["requirement:REQ-004"], "DONE")
-        self.assertEqual(done["source_acceptance:source"], "DONE")
-
-    def test_story_edit_survives_a_session_boundary_and_blocks_completion(self):
-        p = self.two_approved()
-        s = self.approved_json(p)
-        s["title"] = "Register as a library member"
-        self.write_approved_json(p, s)
-        self.ba(p, "changes", "check")
-        p2 = Project.open(p.root)
-        rc, out = self.ba(p2, "complete")
-        self.assertFalse(out["complete"])
-        self.assertTrue(any("CHG-001" in r for r in out["outstanding"]))
-        self.ba(p2, "changes", "apply", "--id", "CHG-001", "--by-name", "Priya Nair", "--by-role", "Product Owner", "--statement", "ok")
-        rc, h = self.ba(Project.open(p.root), "story", "history", "US-001")
-        self.assertEqual(h["awaiting_review"][0]["version"], 2)
-        self.assertEqual(h["approved_versions"][0]["approval_statement"], "I approve US-001 v1.")
-
-    def test_traceability_report_lists_change_impact_and_stale_artifacts(self):
-        p = self.two_approved()
-        self.edit_brd(lambda t: t.replace("A visitor shall register", "A visitor must register"))
-        cid = changes.check(p)["changes"][0]["change_id"]
-        changes.apply(p, cid, *PO, "apply")
-        t = checks.traceability(p, write=True)
-        self.assertIn("REQ-001", t["change_impact"]["stale_artifacts"]["requirements_needing_review"])
-        self.assertIn("US-001", t["change_impact"]["stale_artifacts"]["stories_flagged"])
-        md = (p.root / "reports" / "traceability-report.md").read_text(encoding="utf-8")
-        self.assertIn("Change impact", md)
-        self.assertIn(cid, md)
-        # the approved story keeps its approval on record, flagged with the reason and the change id
-        s = self.approved_json(p)
-        self.assertEqual(s["status"], "APPROVED")
-        self.assertEqual(s["impact_review"]["change_id"], cid)
-        self.assertEqual(s["approval"]["statement"], "I approve US-001 v1.")
+        p = self.approved3()
+        self.edit_block(p, "then the expected outcome is produced.", "then A happens.")
+        cid = changemod.check(p, True)["unreviewed_ids"][0]
+        p2 = projmod.Project.open(p.root)
+        self.assertEqual([c["change_id"] for c in changemod.records(p2, "DETECTED")], [cid])
+        self.apply(p2, cid)
+        p3 = projmod.Project.open(p.root)
+        self.assertEqual(changemod.get(p3, cid)["status"], "APPLIED")
+        self.assertIn("await review", checks.next_action(p3))
+        self.assertFalse(checks.completion(p3)["complete"])
 
     def test_every_step_is_in_the_audit_log_with_ist_timestamps(self):
-        p = self.two_approved()
-        self.edit_brd(lambda t: t.replace("within 14 days", "within 21 days"))
-        cid = changes.check(p)["changes"][0]["change_id"]
-        changes.apply(p, cid, *PO, "apply")
-        evs = {e["event_type"]: e for e in p.audit_events()}
-        for t in ("CHANGE_DETECTED", "CHANGE_APPLIED", "BRD_SNAPSHOT_RECORDED"):
-            self.assertIn(t, evs)
-            self.assertTrue(util.is_ist_iso(evs[t]["at_ist"]))
-        rec = changes.get(p, cid)
-        self.assertTrue(util.is_ist_iso(rec["detected_at_ist"]) and util.is_ist_iso(rec["applied"]["at_ist"]))
-        self.assertEqual([h["event"] for h in rec["history"]], ["DETECTED", "APPLIED"])
-        self.assertEqual(changes.status(p)["records"][0]["change_id"], cid)
+        p = self.approved3()
+        self.edit_block(p, "then the expected outcome is produced.", "then A happens.")
+        cid = changemod.check(p, True)["unreviewed_ids"][0]
+        self.apply(p, cid)
+        evs = [e for e in p.audit_events() if e["event_type"].startswith(("CHANGE_", "AC_MANUAL", "AC_REAPPROVAL"))]
+        self.assertTrue({"CHANGE_DETECTED", "CHANGE_APPLIED", "AC_MANUAL_EDIT_DETECTED"} <= {e["event_type"] for e in evs})
+        for e in p.audit_events():
+            self.assertTrue(util.is_ist_iso(e["at_ist"]), e)
+        self.assertEqual(checks.validate_project(p)["errors"], [])
 
     def test_library_source_check_still_works_in_one_step_and_leaves_a_record(self):
-        p = self.to_baseline()
-        self.edit_brd(lambda t: t.replace("within 14 days", "within 21 days"))
-        out = reqs.source_check(p)
-        self.assertTrue(out["changed"])
-        rec = changes.records(p)[0]
-        self.assertEqual(rec["status"], "APPLIED")
-        self.assertIsNone(rec["applied"]["by_name"], "a direct library call carries no human acknowledgement - and says so")
+        p = self.approved3()
+        f = self.src / "membership.md"
+        f.write_bytes(f.read_bytes().replace(b"at most 5 books", b"at most 3 books"))
+        eff = changemod.check_and_apply_source(p)
+        self.assertEqual(eff["requirements_changed"], [K3])
+        rec = changemod.records(p)[0]
+        self.assertEqual((rec["status"], rec["applied"]["by_name"]), ("APPLIED", None))
+        self.assertEqual(changemod.check_and_apply_source(p), {"changed": False, "fingerprint": p.state["source"]["fingerprint"]})
 
 
 if __name__ == "__main__":

@@ -1,20 +1,13 @@
-## $story_id: $title
+## $label: $title
 
+**Requirement key:** $req_key  
 **Status:** $status  
 **Version:** $version  
-**Requirement IDs:** $requirement_ids  
-**Source references:** $source_references  
 **Decision IDs:** $decision_ids  
-**Dependencies:** $dependencies  
 **Assumptions:** $assumptions  
 **Open gaps:** $open_gap_ids  
 **Readiness:** $readiness
 $approval
-
-### User Story
-As a $role,
-I want $capability,
-so that $value.
 
 ### Acceptance Criteria
 $acceptance_criteria

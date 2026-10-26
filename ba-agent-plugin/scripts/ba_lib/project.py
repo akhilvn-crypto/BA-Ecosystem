@@ -8,11 +8,12 @@ import shutil
 import uuid
 from pathlib import Path
 
-from . import adr, ingest, render, schema, snapshots
-from .util import (BAError, append_jsonl, atomic_write_text, ist_now_iso, is_within, read_json, read_jsonl,
+from . import docmodel, ingest, reqindex, render, schema, snapshots
+from .util import (BAError, append_jsonl, atomic_write_bytes, atomic_write_text, ist_now_iso, is_within, read_json, read_jsonl,
                    safe_join)
 
 FAULT_HOOK = None  # tests set this to simulate a crash at named points
+SCHEMA_VERSION = "2.0"
 
 
 def fault(point: str) -> None:
@@ -20,22 +21,21 @@ def fault(point: str) -> None:
         FAULT_HOOK(point)
 
 
-STAGES = ["INITIALIZED", "BRD_PARSED", "REQUIREMENTS_READY", "GAP_ANALYSIS", "WAITING_FOR_GAP_INPUT",
-          "REQUIREMENTS_BASELINED", "STORIES_READY", "WAITING_FOR_STORY_REVIEW", "COMPLETED", "BLOCKED", "PAUSED"]
+STAGES = ["INITIALIZED", "SOURCE_INDEXED", "GAP_ANALYSIS", "WAITING_FOR_GAP_INPUT", "AC_DRAFTING", "WAITING_FOR_AC_REVIEW",
+          "COMPLETED", "BLOCKED", "PAUSED"]
 _REOPEN = {"GAP_ANALYSIS", "WAITING_FOR_GAP_INPUT"}
 STAGE_TRANSITIONS = {
-    "INITIALIZED": {"BRD_PARSED"},
-    "BRD_PARSED": {"REQUIREMENTS_READY"},
-    "REQUIREMENTS_READY": {"GAP_ANALYSIS", "BRD_PARSED"},
-    "GAP_ANALYSIS": {"WAITING_FOR_GAP_INPUT", "REQUIREMENTS_BASELINED", "REQUIREMENTS_READY"},
-    "WAITING_FOR_GAP_INPUT": {"GAP_ANALYSIS", "REQUIREMENTS_BASELINED"},
-    "REQUIREMENTS_BASELINED": {"STORIES_READY"} | _REOPEN,
-    "STORIES_READY": {"WAITING_FOR_STORY_REVIEW", "REQUIREMENTS_BASELINED"} | _REOPEN,
-    "WAITING_FOR_STORY_REVIEW": {"COMPLETED", "STORIES_READY", "REQUIREMENTS_BASELINED"} | _REOPEN,
-    "COMPLETED": {"WAITING_FOR_STORY_REVIEW", "STORIES_READY", "REQUIREMENTS_BASELINED", "REQUIREMENTS_READY"} | _REOPEN,
+    "INITIALIZED": {"SOURCE_INDEXED"},
+    "SOURCE_INDEXED": {"GAP_ANALYSIS"},
+    "GAP_ANALYSIS": {"WAITING_FOR_GAP_INPUT", "AC_DRAFTING", "SOURCE_INDEXED"},
+    "WAITING_FOR_GAP_INPUT": {"GAP_ANALYSIS", "AC_DRAFTING"},
+    "AC_DRAFTING": {"WAITING_FOR_AC_REVIEW"} | _REOPEN,
+    "WAITING_FOR_AC_REVIEW": {"COMPLETED", "AC_DRAFTING"} | _REOPEN,
+    "COMPLETED": {"WAITING_FOR_AC_REVIEW", "AC_DRAFTING", "SOURCE_INDEXED"} | _REOPEN,
 }
 # PAUSED / BLOCKED may be entered from any stage except themselves and only exit to the saved resume_stage.
 PAUSABLE = set(STAGES) - {"PAUSED", "BLOCKED"}
+STAGE_ORDER = ["INITIALIZED", "SOURCE_INDEXED", "GAP_ANALYSIS", "WAITING_FOR_GAP_INPUT", "AC_DRAFTING", "WAITING_FOR_AC_REVIEW", "COMPLETED"]
 
 GAP_STATUSES = ["OPEN", "WAITING_FOR_ANSWER", "RESOLVED", "DEFERRED", "REOPENED", "BLOCKED"]
 GAP_TRANSITIONS = {
@@ -46,7 +46,7 @@ GAP_TRANSITIONS = {
     "REOPENED": {"WAITING_FOR_ANSWER", "DEFERRED", "BLOCKED"},
     "BLOCKED": {"OPEN", "WAITING_FOR_ANSWER"},
 }
-STORY_TRANSITIONS = {
+AC_TRANSITIONS = {
     "CANDIDATE": {"IN_REVIEW", "APPROVED", "DEFERRED", "CHANGES_REQUESTED", "SUPERSEDED", "BLOCKED"},
     "IN_REVIEW": {"APPROVED", "DEFERRED", "CHANGES_REQUESTED", "CANDIDATE", "SUPERSEDED", "BLOCKED"},
     "CHANGES_REQUESTED": {"SUPERSEDED", "CANDIDATE", "DEFERRED"},
@@ -56,19 +56,18 @@ STORY_TRANSITIONS = {
     "SUPERSEDED": set(),
 }
 
-REQ_DIR = "atomic-requirements"  # one folder the user can open; older projects used "requirements" (migrated on open)
-LEGACY_REQ_DIR = "requirements"
-
 # Every user-facing artifact folder keeps its readable copies in `md/` and its machine records in `json/`.
-STORY_BUCKETS = ("candidates", "approved", "unapproved", "deferred", "archive")
+AC_BUCKETS = ("candidates", "approved", "unapproved", "deferred", "archive")
 # A gap lives in the folder that matches its status and moves when the status changes: open (asked, answered later,
 # reopened, carried forward), deferred, resolved. The register that holds them all is machine state, not a user folder.
 GAP_BUCKETS = ("open", "deferred", "resolved")
 GAP_REGISTER = "state/gap-register.json"
-SPLIT_DIRS = ("extracted", REQ_DIR, "decisions", "baselines", "changes") + tuple(f"gaps/{b}" for b in GAP_BUCKETS) +     tuple(f"stories/{b}" for b in STORY_BUCKETS)
+SPLIT_DIRS = ("index", "decisions", "changes") + tuple(f"gaps/{b}" for b in GAP_BUCKETS) + tuple(f"acceptance/{b}" for b in AC_BUCKETS)
 FORMAT_DIRS = {".md": "md", ".json": "json", ".jsonl": "json"}
-DIRS = ["state", "state/backups", "state/pending", "reports", "snapshots/brd", "snapshots/stories"] +        [f"{d}/{sub}" for d in SPLIT_DIRS for sub in ("md", "json")]
-UNRESOLVED_OK_STORY_BUCKETS = ("candidates", "approved", "unapproved", "deferred")
+DIRS = ["state", "state/backups", "state/pending", "reports", "snapshots/source", "snapshots/ac"] + \
+       [f"{d}/{sub}" for d in SPLIT_DIRS for sub in ("md", "json")]
+PENDING_AC_BUCKETS = ("candidates", "unapproved", "deferred")
+LIVE_AC_BUCKETS = ("candidates", "approved", "unapproved", "deferred")
 
 
 def gap_bucket(g: dict) -> str:
@@ -76,9 +75,9 @@ def gap_bucket(g: dict) -> str:
 
 
 def physical(rel: str) -> str:
-    """Map a logical artifact path (`stories/approved/US-001.md`) to where it lives on disk (`stories/approved/md/US-001.md`).
+    """Map a logical artifact path (`acceptance/approved/auth--REQ-1.md`) to where it lives on disk (`.../md/auth--REQ-1.md`).
 
-    Only files directly inside a split folder move; folders, `state/`, `reports/` and `snapshots/` are returned unchanged."""
+    Only files directly inside a split folder move; folders, `state/`, `reports/`, `snapshots/` and `enriched/` are returned unchanged."""
     r = rel.replace("\\", "/").strip("/")
     d, _, name = r.rpartition("/")
     sub = FORMAT_DIRS.get(os.path.splitext(name)[1].lower()) if name else None
@@ -86,8 +85,17 @@ def physical(rel: str) -> str:
 
 
 def slugify(s: str) -> str:
-    s = re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
-    return (s or "ba-project")[:60]
+    s = re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")[:60].strip("-") or "ba-project"
+    return s if len(s) >= 2 else s + "-project"
+
+
+def ac_fname(key: str) -> str:
+    """A file name for a requirement key: `requirements/auth.md::REQ-012` -> `requirements__auth.md--REQ-012`."""
+    base = key.replace("::", "--").replace("/", "__")
+    if re.fullmatch(r"[A-Za-z0-9._-]+", base):
+        return base
+    import hashlib
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", base)[:100] + "-" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:6]
 
 
 def check_transition(table: dict, kind: str, cur: str, new: str) -> None:
@@ -102,62 +110,97 @@ class Project:
     def __init__(self, root: Path):
         self.root = Path(root).resolve()
         self._state: dict | None = None
-        # Paths a move left behind (a gap changing folder, a story changing bucket). They are reported as removed even when the
+        self._index: dict | None = None
+        self._syncing = False
+        self.doc_warnings: list[str] = []
+        # Paths a move left behind (a gap changing folder, an AC changing bucket). They are reported as removed even when the
         # file was never in this workspace: a lean staged copy has no md/ view to notice missing, but the user's side does.
         self.vacated: set[str] = set()
 
     # ------------------------------------------------------------ lifecycle
     @classmethod
-    def create(cls, root, brd, name: str | None = None, copy_source: bool = False) -> "Project":
-        root, brd = Path(root).resolve(), Path(brd).resolve()
-        meta = ingest.extract(brd)  # fail on unsupported/unreadable BEFORE creating anything
+    def create(cls, root, requirements, name: str | None = None, copy_source: bool = False, recursive: bool = False,
+               locator: str | None = None, enriched_dir: str | None = None) -> "Project":
+        root, src = Path(root).resolve(), Path(requirements).resolve()
+        if not src.exists():
+            raise BAError("SOURCE_NOT_FOUND", f"Requirements not found: {src}. Give a folder of .md files or one .md file.")
+        kind = "file" if src.is_file() else "folder"
+        if kind == "file":
+            ingest.check_markdown(src)
+        src_root = src.parent if kind == "file" else src
         if (root / "state" / "workflow.json").exists():
             raise BAError("ALREADY_INITIALIZED", f"{root} already contains a BA project. Use resume/status instead.")
-        if root == brd or root.is_file():
-            raise BAError("BAD_ROOT", "Project root must be a folder, not the BRD file.")
+        if root.is_file() or root == src or (kind == "folder" and is_within(src, root)):
+            raise BAError("OUTPUT_INSIDE_SOURCE", "The project folder must be a separate folder next to the requirements, not inside them "
+                          f"(got {root}). The requirements are read-only input; everything the BA Agent writes goes in the project folder.")
+        enr = Path(enriched_dir).resolve() if enriched_dir else None
+        if enr and (is_within(src_root, enr) if kind == "folder" else enr == src.parent):
+            raise BAError("OUTPUT_INSIDE_SOURCE", f"The enriched copies cannot be written inside the requirements folder ({enr}).")
+        pattern = locator or docmodel.DEFAULT_ID_PATTERN
+        docmodel.compile_locator(pattern)
+        sc = reqindex.scan(src_root, kind, recursive, pattern, exclude=(root,), name=src.name if kind == "file" else None)  # fail on unreadable BEFORE creating anything
+        if sc["enriched_files"]:
+            raise BAError("ENRICHED_FILE_AS_SOURCE", f"{sc['enriched_files']} already carry BA Agent markers: they are enriched copies, not "
+                          "the original requirements. Point the project at the original files.", files=sc["enriched_files"])
+        if sc["unreadable"]:
+            raise BAError("UNREADABLE_SOURCE", "Some files could not be read: " + "; ".join(f"{u['file']}: {u['error']}" for u in sc["unreadable"]),
+                          files=sc["unreadable"])
+        if not sc["files"]:
+            raise BAError("NO_REQUIREMENTS_FOUND", f"No requirement files found in {src}. Looked for .md files with headings carrying an ID "
+                          "(e.g. `### REQ-012 Title`), table rows with an ID, or headings with text.", skipped=sc["skipped"])
         try:
             root.mkdir(parents=True, exist_ok=True)
-            for d in DIRS:
+            for d in DIRS + ([] if enr else ["enriched"]):
                 (root / d).mkdir(parents=True, exist_ok=True)
+            if enr:
+                enr.mkdir(parents=True, exist_ok=True)
             probe = root / "state" / ".write-probe"
             probe.write_text("ok", encoding="utf-8")
             probe.unlink()
         except OSError as e:
             raise BAError("OUTPUT_NOT_WRITABLE", f"Cannot write to project folder {root}: {e}")
+        copied = False
+        source_path = src
+        if copy_source and not is_within(root, src):
+            dest = root / "source" / (src.name if kind == "folder" else src.parent.name or "requirements")
+            for rel, f in sc["files"].items():
+                t = dest / rel
+                t.parent.mkdir(parents=True, exist_ok=True)
+                t.write_bytes(f["data"])
+            copied, src_root = True, dest
+            source_path = dest / src.name if kind == "file" else dest
         p = cls(root)
-        source_path, rel = brd, None
-        if is_within(root, brd):
-            rel = os.path.relpath(brd, root).replace("\\", "/")
-        if copy_source and not is_within(root, brd):
-            dest = root / "source" / brd.name
-            dest.parent.mkdir(exist_ok=True)
-            shutil.copy2(brd, dest)
-            source_path, rel = dest, f"source/{brd.name}"
         now = ist_now_iso()
+        loc = {"id_pattern": pattern}
+        doc = reqindex.build_doc(sc, loc)
         state = {
-            "schema_version": "1.0", "project_id": slugify(name or brd.stem), "workflow_id": "wf-" + uuid.uuid4().hex[:12],
-            "stage": "INITIALIZED", "resume_stage": None,
-            "source": {"path": str(source_path), "relative_path": rel, "original_path": str(brd),
-                       "fingerprint": meta["fingerprint"], "text_fingerprint": meta["text_fingerprint"],
-                       "material_fingerprint": meta["material_fingerprint"], "format": meta["format"]},
-            "baseline_version": None, "decision_owner": None, "decision_owner_unknown": None,
+            "schema_version": SCHEMA_VERSION, "project_id": slugify(name or (src.stem if kind == "file" else src.name)),
+            "workflow_id": "wf-" + uuid.uuid4().hex[:12], "stage": "INITIALIZED", "resume_stage": None,
+            "source": {"path": str(source_path), "original_path": str(src), "root": str(src_root), "kind": kind, "recursive": bool(recursive),
+                       "locator": loc, "fingerprint": reqindex.tree_fingerprint(doc), "copied": copied},
+            "enriched_dir": str(enr) if enr else None,
+            "decision_owner": None, "decision_owner_unknown": None,
             "decision_owner_history": [], "gap_analysis_complete": False,
             "policy": {"blocking_priorities": ["CRITICAL", "HIGH"], "accept_nonblocking_carry_forward": False,
                        "deferral_revisit_required_priorities": [], "accepted_by": None},
-            "impact_review": {"pending": False, "reasons": []},
-            "pending_gap_ids": [], "pending_story_ids": [], "last_completed_action": "project-initialized",
+            "pending_gap_ids": [], "pending_ac_keys": [], "last_completed_action": "project-initialized",
             "created_at": now, "updated_at": now,
         }
         p._state = state
         p.save_state("project-initialized")
-        p.write_source_metadata(meta)
-        snapshots.record(p, meta, "initial BRD")
-        p.audit("WORKFLOW_STARTED", source_format=meta["format"], source_fingerprint=meta["fingerprint"],
-                parser=meta["parser"], copied_source=bool(copy_source and rel and rel.startswith("source/")))
-        p.set_stage("BRD_PARSED", "brd-parsed")
-        if meta["injection_suspects"]:
-            p.audit("SOURCE_INSTRUCTION_LIKE_CONTENT", count=len(meta["injection_suspects"]),
-                    lines=[h["line"] for h in meta["injection_suspects"]])
+        for rel, f in sc["files"].items():
+            snapshots.record(p, rel, f["data"], "initial requirements")
+        reqindex.write(p, doc)
+        p._index = None
+        p.audit("WORKFLOW_STARTED", source_kind=kind, files=len(sc["files"]), requirements=len(doc["requirements"]),
+                source_fingerprint=state["source"]["fingerprint"], parser=ingest.PARSER_VERSION, copied_source=copied, recursive=bool(recursive))
+        p.set_stage("SOURCE_INDEXED", "requirements-indexed")
+        suspects = {rel: [h["line"] for h in f["injection_suspects"]] for rel, f in sc["files"].items() if f["injection_suspects"]}
+        if suspects:
+            p.audit("SOURCE_INSTRUCTION_LIKE_CONTENT", files=suspects)
+        p.index_report = {"warnings": [f"{rel}: {w}" for rel, f in sc["files"].items() for w in f["warnings"]],
+                          "skipped": sc["skipped"], "instruction_like_lines": sum(len(v) for v in suspects.values())}
+        p.sync_docs()
         return p
 
     @classmethod
@@ -165,108 +208,26 @@ class Project:
         p = cls(Path(root))
         if not (p.root / "state" / "workflow.json").exists():
             raise BAError("NOT_A_PROJECT", f"No BA project found at {p.root} (missing state/workflow.json).")
-        p._migrate_legacy_layout()
         p.state  # load + validate
         return p
-
-    def _migrate_legacy_layout(self) -> None:
-        old, new = self.root / LEGACY_REQ_DIR, self.root / REQ_DIR
-        if old.is_dir() and not any(new.rglob("REQ-*")) and any(old.glob("REQ-*")):
-            try:
-                if new.is_dir():
-                    for sub in ("md", "json"):
-                        if (new / sub).is_dir():
-                            (new / sub).rmdir()  # empty scaffolding only; the guard above saw no REQ files
-                    new.rmdir()
-                old.rename(new)
-            except OSError as e:
-                raise BAError("MIGRATION_FAILED", f"Could not rename {old} to {new}: {e}")
-        self._migrate_split_layout()
-        self._migrate_unapproved_stories()
-        self._migrate_gap_layout()
-
-    def _migrate_split_layout(self) -> None:
-        """Before 1.6.0 `.md` and `.json` files shared one folder. Move them into `md/` and `json/` (idempotent)."""
-        for d in SPLIT_DIRS:
-            folder = self.root / d
-            if not folder.is_dir():
-                continue
-            for sub in ("md", "json"):
-                (folder / sub).mkdir(exist_ok=True)
-            for f in sorted(x for x in folder.iterdir() if x.is_file()):
-                sub = FORMAT_DIRS.get(f.suffix.lower())
-                if not sub or f.name == adr.LOG_NAME:
-                    continue
-                dest = folder / sub / f.name
-                try:
-                    if dest.exists():
-                        if dest.read_bytes() != f.read_bytes():
-                            continue  # two different files: never overwrite either, leave the loose one for the user to see
-                        f.unlink()
-                    else:
-                        f.replace(dest)
-                except OSError as e:
-                    raise BAError("MIGRATION_FAILED", f"Could not move {f} to {dest}: {e}")
-
-    def _migrate_gap_layout(self) -> None:
-        """Before 1.9.0 every gap sat in `gaps/md/` and the register in `gaps/json/`. Move the register to `state/`, file each gap
-        under open/deferred/resolved, then remove the old copies (only after the new ones are written)."""
-        gdir = self.root / "gaps"
-        new_reg = self.root / GAP_REGISTER
-        old_regs = [gdir / "json" / "gap-register.json", gdir / "gap-register.json"]
-        loose = list((gdir / "md").glob("GAP-*.md")) + list(gdir.glob("GAP-*.md"))
-        if not loose and not any(x.is_file() for x in old_regs):
-            return  # already in the 1.9.0 layout (or no gaps yet): opening a project must not rewrite anything
-        if not new_reg.exists():
-            old = next((x for x in old_regs if x.is_file()), None)
-            if old is None:
-                return
-            try:
-                new_reg.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(old, new_reg)
-            except OSError as e:
-                raise BAError("MIGRATION_FAILED", f"Could not move the gap register to state/: {e}")
-        for sub in ("open", "deferred", "resolved"):
-            for ext in ("md", "json"):
-                (gdir / sub / ext).mkdir(parents=True, exist_ok=True)
-        self.sync_gap_files()
-        for old in old_regs:
-            if old.is_file():
-                old.unlink()
-        for f in loose:
-            f.unlink()
-        for d in (gdir / "md", gdir / "json"):
-            try:
-                d.rmdir()  # only if empty: a loose file the user put there is never deleted
-            except OSError:
-                pass
-
-    def _migrate_unapproved_stories(self) -> None:
-        """Before 1.1.0 'not approved' stories stayed in stories/candidates/ with status CHANGES_REQUESTED."""
-        cand = self.root / "stories" / "candidates"
-        if not cand.is_dir():
-            return
-        dest = self.root / "stories" / "unapproved"
-        for f in sorted((cand / "json").glob("US-*.json")):
-            try:
-                if json.loads(f.read_text(encoding="utf-8")).get("status") != "CHANGES_REQUESTED":
-                    continue
-                for ext in ("json", "md"):
-                    src = cand / ext / f"{f.stem}.{ext}"
-                    if src.exists():
-                        (dest / ext).mkdir(parents=True, exist_ok=True)
-                        src.replace(dest / ext / src.name)
-            except (OSError, ValueError) as e:
-                raise BAError("MIGRATION_FAILED", f"Could not move {f.name} to stories/unapproved/: {e}")
 
     # ----------------------------------------------------------------- paths / IO
     def path(self, rel: str) -> Path:
         return safe_join(self.root, physical(rel))
 
     def files(self, folder: str, pattern: str) -> list[Path]:
-        """Files of a split folder matching `pattern` (e.g. `US-*.json`), looked up in its `md/` or `json/` subfolder."""
+        """Files of a split folder matching `pattern` (e.g. `*.json`), looked up in its `md/` or `json/` subfolder."""
         sub = FORMAT_DIRS.get(os.path.splitext(pattern)[1].lower(), "")
         return sorted(self.path(folder).joinpath(sub).glob(pattern))
+
+    @property
+    def enriched_root(self) -> Path:
+        d = (self._state or {}).get("enriched_dir") if self._state is not None else None
+        return Path(d) if d else self.root / "enriched"
+
+    def _enriched_files(self) -> list[Path]:
+        base = self.enriched_root
+        return [f for f in base.rglob("*") if f.is_file()] if base.is_dir() else []
 
     def _dir_sig(self) -> dict:
         """(file count, newest mtime) per artifact folder: cheap enough to take before and after every command."""
@@ -277,12 +238,13 @@ class Project:
                 out[f"{d}/{sub}"] = (len(files), max((x.stat().st_mtime_ns for x in files), default=0))
         reports = [x for x in (self.root / "reports").glob("*.md")]
         out["reports"] = (len(reports), max((x.stat().st_mtime_ns for x in reports), default=0))
+        en = self._enriched_files()
+        out["enriched"] = (len(en), max((x.stat().st_mtime_ns for x in en), default=0))
         return out
 
     def receipt(self, since: dict | None = None) -> dict:
         """What is on disk right now, folder by folder, so a stage can prove its files are where the user can open them.
-        With `since` (a `_dir_sig()` taken before a command) only the folders that command changed are listed, in compact
-        form (the json/ folder sits next to md/)."""
+        With `since` (a `_dir_sig()` taken before a command) only the folders that command changed are listed."""
         now = self._dir_sig() if since is not None else None
         out = {}
         for d in SPLIT_DIRS:
@@ -292,18 +254,24 @@ class Project:
             md = [x for x in (base / "md").glob("*") if x.is_file()]
             js = [x for x in (base / "json").glob("*") if x.is_file()]
             if md or js:
-                out[d] = {"folder": str(base), "md_folder": str(base / "md"), "md_files": len(md), "json_files": len(js)} if since is not None else                     {"md_folder": str(base / "md"), "md_files": len(md), "json_folder": str(base / "json"), "json_files": len(js)}
+                out[d] = {"folder": str(base), "md_folder": str(base / "md"), "md_files": len(md), "json_files": len(js)} if since is not None else \
+                    {"md_folder": str(base / "md"), "md_files": len(md), "json_folder": str(base / "json"), "json_files": len(js)}
         reports = [x for x in (self.root / "reports").glob("*.md")]
         if reports and (since is None or now["reports"] != since.get("reports")):
             out["reports"] = {"folder": str(self.root / "reports"), "files": len(reports)}
+        en = self._enriched_files()
+        if en and (since is None or now["enriched"] != since.get("enriched")):
+            out["enriched"] = {"folder": str(self.enriched_root), "files": len(en)}
         return out
 
     def _guard_source(self, target: Path) -> None:
-        st = self._state or {}
-        for key in ("path", "original_path"):
-            sp = (st.get("source") or {}).get(key)
-            if sp and os.path.realpath(sp) == os.path.realpath(target):
-                raise BAError("SOURCE_PROTECTED", "Refusing to write to the original BRD.")
+        sp = ((self._state or {}).get("source") or {})
+        if sp.get("kind") == "folder":  # everything under the folder is input
+            hit = any(sp.get(k) and is_within(Path(sp[k]), target) for k in ("root", "original_path"))
+        else:  # one file: only that file
+            hit = any(sp.get(k) and os.path.realpath(sp[k]) == os.path.realpath(target) for k in ("path", "original_path"))
+        if hit:
+            raise BAError("SOURCE_PROTECTED", "Refusing to write to the supplied requirements: they are read-only input.")
 
     def write_text(self, rel: str, text: str, backup: bool = True) -> None:
         target = self.path(rel)
@@ -327,6 +295,29 @@ class Project:
             if errs:
                 raise BAError("SCHEMA_INVALID", f"{rel} failed {schema_name} validation", errors=errs)
         self.write_text(rel, json.dumps(obj, indent=2, ensure_ascii=False, sort_keys=False) + "\n")
+        if rel.startswith("index/"):
+            self._index = None
+
+    def write_enriched(self, rel: str, data: bytes) -> None:
+        """Write one generated copy under the enriched folder (bytes exactly as given; the previous copy is kept in state/backups/)."""
+        target = safe_join(self.enriched_root, rel)
+        self._guard_source(target)
+        try:
+            if target.exists() and target.read_bytes() != data:
+                b = self.path("state/backups/enriched__" + rel.replace("/", "__") + ".bak")
+                b.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(target, b)
+            atomic_write_bytes(target, data)
+        except OSError as e:
+            raise BAError("WRITE_FAILED", f"Could not write the enriched copy {rel}: {e}")
+
+    def remove_enriched(self, rel: str) -> None:
+        target = safe_join(self.enriched_root, rel)
+        if target.exists():
+            b = self.path("state/backups/enriched__" + rel.replace("/", "__") + ".bak")
+            b.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(target, b)
+            target.unlink()
 
     def read_json(self, rel: str):
         return read_json(self.path(rel))
@@ -334,17 +325,38 @@ class Project:
     def exists(self, rel: str) -> bool:
         return self.path(rel).exists()
 
+    def sync_docs(self) -> dict | None:
+        """Bring the enriched copies up to date with the approved criteria and the gap state. A convenience view of state: a problem
+        here never fails the command that changed the state; it is kept in `doc_warnings` and reported by `validate`."""
+        if self._syncing or self._state is None:
+            return None
+        from . import docsync
+        self._syncing = True
+        try:
+            return docsync.refresh(self)
+        except BAError as e:
+            self.doc_warnings.append(f"{e.code}: {e.message}")
+            return None
+        finally:
+            self._syncing = False
+
     # ------------------------------------------------------------------ state
     @property
     def state(self) -> dict:
         if self._state is None:
             try:
-                self._state = self.read_json("state/workflow.json")
+                st = self.read_json("state/workflow.json")
             except (OSError, json.JSONDecodeError) as e:
                 raise BAError("STATE_CORRUPT", f"state/workflow.json unreadable: {e}. Restore from state/backups/.")
-            errs = schema.validate(self._state, "workflow_state")
+            if isinstance(st, dict) and st.get("schema_version") != SCHEMA_VERSION:
+                raise BAError("LEGACY_PROJECT", f"This project was created by ba-agent 1.x (schema {st.get('schema_version')}, stage "
+                              f"{st.get('stage')}). ba-agent 2.0 works on a requirements folder and does not read BRD/baseline/story "
+                              "projects. Keep using ba-agent 1.10.2 for it, or start a new project on the requirements folder.",
+                              schema_version=st.get("schema_version"), stage=st.get("stage"), project_id=st.get("project_id"))
+            errs = schema.validate(st, "workflow_state")
             if errs:
                 raise BAError("STATE_INVALID", "state/workflow.json is invalid", errors=errs)
+            self._state = st
         return self._state
 
     def save_state(self, action: str) -> None:
@@ -353,8 +365,7 @@ class Project:
         st["updated_at"] = ist_now_iso()
         try:
             st["pending_gap_ids"] = [g["gap_id"] for g in self.gaps() if g["status"] != "RESOLVED"] if self._has_register() else []
-            st["pending_story_ids"] = sorted({s["story_id"] for b, s in self.all_stories()
-                                              if b in ("candidates", "unapproved", "deferred")})
+            st["pending_ac_keys"] = sorted({a["req_key"] for b, a in self.all_acs() if b in PENDING_AC_BUCKETS})
         except BAError:
             pass
         self.write_json("state/workflow.json", st, "workflow_state")
@@ -379,10 +390,8 @@ class Project:
 
     def reopen_to(self, target: str, reason: str) -> None:
         """Move back to an earlier stage when later work is invalidated (no-op if already earlier)."""
-        order = ["INITIALIZED", "BRD_PARSED", "REQUIREMENTS_READY", "GAP_ANALYSIS", "WAITING_FOR_GAP_INPUT",
-                 "REQUIREMENTS_BASELINED", "STORIES_READY", "WAITING_FOR_STORY_REVIEW", "COMPLETED"]
         cur = self.state["stage"]
-        if cur in order and order.index(cur) > order.index(target):
+        if cur in STAGE_ORDER and STAGE_ORDER.index(cur) > STAGE_ORDER.index(target):
             self.audit("WORKFLOW_REOPENED", from_stage=cur, to_stage=target, reason=reason)
             self.set_stage(target, f"reopened-{reason}")
 
@@ -406,43 +415,21 @@ class Project:
         nums = [int(m.group(1)) for x in existing if (m := re.match(rf"^{prefix}-(\d+)", x))]
         return f"{prefix}-{(max(nums) + 1 if nums else 1):03d}"
 
-    # ----------------------------------------------------------------- source
-    def write_source_metadata(self, meta: dict) -> None:
-        doc = {"source": {k: self.state["source"].get(k) for k in ("path", "original_path", "relative_path")},
-               "format": meta["format"], "fingerprint": meta["fingerprint"], "text_fingerprint": meta["text_fingerprint"],
-               "parser": meta["parser"], "processed_at_ist": ist_now_iso(), "sections": meta["sections"],
-               "injection_suspects": meta["injection_suspects"], "warnings": meta["warnings"]}
-        self.write_json("extracted/source-metadata.json", doc)
-        self.write_text("extracted/brd-outline.md", ingest.outline_markdown(Path(self.state["source"]["path"]).name, meta))
-
-    def source_metadata(self) -> dict:
-        return self.read_json("extracted/source-metadata.json")
-
-    def sections(self) -> dict[str, dict]:
-        return {s["section_id"]: s for s in self.source_metadata()["sections"]}
-
-    def load_source(self, verify: bool = True) -> dict:
-        meta = ingest.extract(Path(self.state["source"]["path"]))
-        if verify and meta["fingerprint"] != self.state["source"]["fingerprint"]:
-            raise BAError("SOURCE_CHANGED", "The BRD no longer matches the recorded fingerprint. "
-                          "Run `source check` to assess the impact before continuing.")
-        return meta
-
     # ----------------------------------------------------------- requirements
-    def req_ids(self) -> list[str]:
-        return sorted(p.stem for p in self.files(REQ_DIR, "REQ-*.json"))
+    def source_root(self) -> Path:
+        return Path(self.state["source"]["root"])
 
-    def requirements(self) -> list[dict]:
-        return [self.read_json(f"{REQ_DIR}/{i}.json") for i in self.req_ids()]
+    def requirements(self, active_only: bool = True) -> list[dict]:
+        return reqindex.entries(self, active_only)
 
-    def requirement(self, rid: str) -> dict:
-        if not re.match(r"^REQ-\d{3,}$", rid or "") or not self.exists(f"{REQ_DIR}/{rid}.json"):
-            raise BAError("UNKNOWN_REQUIREMENT", f"Requirement {rid} does not exist.")
-        return self.read_json(f"{REQ_DIR}/{rid}.json")
+    def requirement(self, ref: str) -> dict:
+        return reqindex.by_key(self)[reqindex.resolve(self, ref)]
 
-    def save_requirement(self, r: dict) -> None:
-        self.write_json(f"{REQ_DIR}/{r['requirement_id']}.json", r, "requirement")
-        self.write_text(f"{REQ_DIR}/{r['requirement_id']}.md", render.requirement_md(r))
+    def req_key(self, ref: str, active_only: bool = False) -> str:
+        return reqindex.resolve(self, ref, active_only)
+
+    def label(self, key: str) -> str:
+        return reqindex.label(self, key)
 
     # ------------------------------------------------------------------- gaps
     def _has_register(self) -> bool:
@@ -465,10 +452,11 @@ class Project:
             if errs:
                 raise BAError("SCHEMA_INVALID", f"{g.get('gap_id')} failed gap validation", errors=errs)
         was = {x["gap_id"]: gap_bucket(x) for x in self.gaps()}
-        self.write_json(GAP_REGISTER, {"schema_version": "1.0", "updated_at": ist_now_iso(), "gaps": gaps})
+        self.write_json(GAP_REGISTER, {"schema_version": SCHEMA_VERSION, "updated_at": ist_now_iso(), "gaps": gaps})
         for g in gaps:
             if touched is None or g["gap_id"] in touched:
                 self.store_gap_files(g, was.get(g["gap_id"]))
+        self.sync_docs()
 
     def store_gap_files(self, g: dict, was: str | None = None) -> str:
         """Write the gap's readable (`md/`) and record (`json/`) copies into the folder for its status and remove any copy left
@@ -478,7 +466,7 @@ class Project:
         if was and was != bucket:  # a move: the old copies are gone whether or not this workspace ever held them
             self.vacated.update(f"gaps/{was}/{ext}/{gid}.{ext}" for ext in ("md", "json"))
         self.write_json(f"gaps/{bucket}/{gid}.json", g)
-        self.write_text(f"gaps/{bucket}/{gid}.md", render.gap_md(g))
+        self.write_text(f"gaps/{bucket}/{gid}.md", render.gap_md(g, self))
         for other in GAP_BUCKETS:
             if other != bucket:
                 for ext in ("md", "json"):
@@ -488,7 +476,7 @@ class Project:
         return f"gaps/{bucket}"
 
     def sync_gap_files(self) -> int:
-        """Make the folders agree with the register (which is the record): used after a migration and by `recover`."""
+        """Make the folders agree with the register (which is the record): used by `recover`."""
         gaps = self.gaps()
         for g in gaps:
             self.store_gap_files(g)
@@ -514,88 +502,71 @@ class Project:
 
     def render_decision(self, did: str) -> None:
         d = self.decisions()[did]
-        self.write_text(f"decisions/{did}.md", render.decision_md(d, d["current_status"]))
+        self.write_text(f"decisions/{did}.md", render.decision_md(d, d["current_status"], self))
 
-    # ----------------------------------------------------------------- stories
-    def all_stories(self) -> list[tuple[str, dict]]:
-        """Every readable story. An unreadable file is skipped here (it must not take status/validate down with it);
-        `unreadable_story_files` lists it so `validate` and change detection can report it."""
+    # ------------------------------------------------------------------- AC
+    def all_acs(self) -> list[tuple[str, dict]]:
+        """Every readable acceptance-criteria record. An unreadable file is skipped here (it must not take status/validate down
+        with it); `unreadable_ac_files` lists it so `validate` and change detection can report it."""
         out = []
-        for b in UNRESOLVED_OK_STORY_BUCKETS:
-            for f in self.files(f"stories/{b}", "US-*.json"):
+        for b in LIVE_AC_BUCKETS:
+            for f in self.files(f"acceptance/{b}", "*.json"):
                 try:
                     out.append((b, read_json(f)))
                 except (ValueError, OSError):
                     continue
         return out
 
-    def unreadable_story_files(self) -> list[str]:
+    def unreadable_ac_files(self) -> list[str]:
         bad = []
-        for b in UNRESOLVED_OK_STORY_BUCKETS:
-            for f in self.files(f"stories/{b}", "US-*.json"):
+        for b in LIVE_AC_BUCKETS:
+            for f in self.files(f"acceptance/{b}", "*.json"):
                 try:
                     read_json(f)
                 except (ValueError, OSError):
-                    bad.append(f"stories/{b}/{f.name}")
+                    bad.append(f"acceptance/{b}/{f.name}")
         return bad
 
-    def archived_stories(self) -> list[dict]:
-        return [read_json(f) for f in self.files("stories/archive", "US-*.json")]
+    def archived_acs(self) -> list[dict]:
+        return [read_json(f) for f in self.files("acceptance/archive", "*.json")]
 
-    def save_story(self, bucket: str, s: dict) -> None:
-        self.write_json(f"stories/{bucket}/{s['story_id']}.json", s, "story")
-        self.write_text(f"stories/{bucket}/{s['story_id']}.md", render.story_md(s))
+    def save_ac(self, bucket: str, a: dict) -> None:
+        name = ac_fname(a["req_key"])
+        self.write_json(f"acceptance/{bucket}/{name}.json", a, "ac")
+        self.write_text(f"acceptance/{bucket}/{name}.md", render.ac_md(a, self))
+        self.sync_docs()
 
-    def remove_story_files(self, bucket: str, sid: str) -> None:
+    def remove_ac_files(self, bucket: str, key: str) -> None:
+        name = ac_fname(key)
         for ext in ("json", "md"):
-            f = self.path(f"stories/{bucket}/{sid}.{ext}")
-            self.vacated.add(physical(f"stories/{bucket}/{sid}.{ext}"))
+            f = self.path(f"acceptance/{bucket}/{name}.{ext}")
+            self.vacated.add(physical(f"acceptance/{bucket}/{name}.{ext}"))
             if f.exists():
                 f.unlink()
+        if bucket == "approved":  # the enriched copy shows approved criteria only: it must stop showing these
+            self.sync_docs()
 
-    def archive_story(self, s: dict, status: str = "SUPERSEDED") -> None:
-        rec = dict(s, status=status)
-        base = f"stories/archive/{s['story_id']}.v{s['version']}"
+    def archive_ac(self, a: dict, status: str = "SUPERSEDED") -> None:
+        rec = dict(a, status=status)
+        base = f"acceptance/archive/{ac_fname(a['req_key'])}.v{a['version']}"
         self.write_json(base + ".json", rec)
-        self.write_text(base + ".md", render.story_md(rec), backup=False)
-
-    # ---------------------------------------------------------------- baseline
-    def baseline_manifest(self) -> dict:
-        if self.exists("baselines/baseline-manifest.json"):
-            return self.read_json("baselines/baseline-manifest.json")
-        return {"schema_version": "1.0", "current_version": None, "versions": [], "stale": False, "stale_reason": None}
-
-    def approved_baseline(self) -> dict | None:
-        m = self.baseline_manifest()
-        v = self.state.get("baseline_version")
-        if v is None:
-            return None
-        ent = next((x for x in m["versions"] if x["version"] == v and x["status"] == "APPROVED"), None)
-        return self.read_json(f"baselines/baseline-v{v}.json") if ent else None
-
-    def mark_baseline_stale(self, reason: str) -> None:
-        m = self.baseline_manifest()
-        if m["versions"] and not m["stale"]:
-            m["stale"], m["stale_reason"] = True, reason
-            self.write_json("baselines/baseline-manifest.json", m)
-            self.audit("BASELINE_MARKED_STALE", reason=reason)
+        self.write_text(base + ".md", render.ac_md(rec, self), backup=False)
 
     # ------------------------------------------------------------------ impact
-    def flag_stories(self, req_ids: set[str], reason: str, cause: str, gap_id: str | None = None,
-                     change_id: str | None = None) -> list[str]:
-        """Flag every non-archived story that links to any of req_ids (or lists `gap_id` as an open gap) for impact review."""
+    def flag_acs(self, keys: set[str], reason: str, cause: str, gap_id: str | None = None, change_id: str | None = None) -> list[str]:
+        """Flag every non-archived AC record for any of `keys` (or listing `gap_id` as an open gap) for impact review."""
         flagged = []
-        for bucket, s in self.all_stories():
-            if set(s["requirement_ids"]) & req_ids or (gap_id and gap_id in s.get("open_gap_ids", [])):
-                cur = s.get("impact_review") or {}
+        for bucket, a in self.all_acs():
+            if a["req_key"] in keys or (gap_id and gap_id in [r["gap_id"] for r in a.get("open_gap_refs", [])]):
+                cur = a.get("impact_review") or {}
                 if cur.get("pending") and cur.get("reason") == reason:
                     continue  # idempotent on replay
-                s["impact_review"] = {"pending": True, "reason": reason, "cause": cause, "at_ist": ist_now_iso(), "change_id": change_id}
-                s["review_history"].append({"action": "IMPACT_FLAGGED", "version": s["version"],
-                                            "at_ist": ist_now_iso(), "note": reason, "change_id": change_id})
-                s["updated_at"] = ist_now_iso()
-                self.save_story(bucket, s)
-                self.audit("STORY_IMPACT_FLAGGED", story_id=s["story_id"], version=s["version"], bucket=bucket,
-                           requirement_ids=sorted(set(s["requirement_ids"]) & req_ids), cause=cause, gap_id=gap_id, change_id=change_id)
-                flagged.append(s["story_id"])
+                a["impact_review"] = {"pending": True, "reason": reason, "cause": cause, "at_ist": ist_now_iso(), "change_id": change_id}
+                a["review_history"].append({"action": "IMPACT_FLAGGED", "version": a["version"], "at_ist": ist_now_iso(), "note": reason,
+                                            "change_id": change_id})
+                a["updated_at"] = ist_now_iso()
+                self.save_ac(bucket, a)
+                self.audit("AC_IMPACT_FLAGGED", req_key=a["req_key"], version=a["version"], bucket=bucket, cause=cause, gap_id=gap_id,
+                           change_id=change_id)
+                flagged.append(a["req_key"])
         return flagged

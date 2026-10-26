@@ -3,7 +3,7 @@ import json
 import subprocess
 import sys
 
-from tests.helpers import BATest, PLUGIN, checks, gapmod, to_legacy_gap_layout
+from tests.helpers import BATest, PLUGIN, checks, gapmod
 from ba_lib.project import Project
 from ba_lib.util import BAError
 
@@ -24,6 +24,9 @@ class GapFolderTests(BATest):
         self.assertEqual(names(r / "gaps/resolved/md"), [])
         self.assertTrue((r / "state/gap-register.json").is_file())
         self.assertFalse((r / "gaps/md").exists() or (r / "gaps/json").exists())
+        text = (r / "gaps/open/md/GAP-001.md").read_text(encoding="utf-8")
+        self.assertIn("**Impacted requirements:** LIB-006", text, "the readable copy names the requirement by its ID")
+        self.assertIn("> The fine rate is to be decided.", text, "and shows the quoted evidence")
 
     def test_an_answered_gap_moves_to_resolved_and_leaves_open(self):
         p = self.with_gaps()
@@ -80,24 +83,22 @@ class GapFolderTests(BATest):
         self.assertTrue(out["gap_file"]["file"].endswith("GAP-003.md"))
         self.assertEqual(out["closed_by"], {"name": OWNER[0], "role": OWNER[1]})
         self.assertIn("gaps/resolved", out["files_saved"])
+        self.assertIn("enriched", out["files_saved"], "the enriched copies follow the gap state")
 
 
-class LegacyGapLayoutTests(BATest):
-    def test_1_8_project_is_filed_by_status_on_open_and_loses_nothing(self):
+class EnrichedFollowsGapFolderTests(BATest):
+    def test_a_gap_moving_between_folders_moves_in_the_enriched_open_gap_table(self):
         p = self.with_gaps()
         self.set_owner(p, *OWNER)
+        t = self.enriched(p, "lending.md")
+        self.assertIn("| GAP-001 | HIGH | OPEN |", t)
         gapmod.next_gaps(p, 10)
-        self.answer_and_resolve(p, "GAP-003", "Block the borrow.", "A 6th borrow is rejected.")
-        reg = (p.root / "state/gap-register.json").read_bytes()
-        to_legacy_gap_layout(p.root)
-        self.assertEqual(names(p.root / "gaps/md"), ["GAP-001.md", "GAP-002.md", "GAP-003.md"])
-        q = Project.open(p.root)
-        self.assertEqual((p.root / "state/gap-register.json").read_bytes(), reg)
-        self.assertEqual(names(p.root / "gaps/resolved/md"), ["GAP-003.md"])
-        self.assertEqual(names(p.root / "gaps/open/md"), ["GAP-001.md", "GAP-002.md"])
-        self.assertFalse((p.root / "gaps/md").exists() or (p.root / "gaps/json").exists())
-        self.assertTrue(checks.validate_project(q)["ok"])
-        Project.open(p.root)  # idempotent
+        gapmod.defer(p, "GAP-001", "Waiting for finance", None, None, "Sam Dsouza", "Finance Lead")
+        self.assertIn("| GAP-001 | HIGH | DEFERRED |", self.enriched(p, "lending.md"))
+        gapmod.revisit(p, "GAP-001")
+        self.answer_and_resolve(p, "GAP-001", "R10 per day.", "R10 per day.")
+        self.assertNotIn("GAP-001", self.enriched(p, "lending.md"))
+        self.assertEqual(names(p.root / "gaps/resolved/md"), ["GAP-001.md"])
 
 
 class OneStepCloseTests(BATest):

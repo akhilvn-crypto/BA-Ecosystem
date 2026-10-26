@@ -1,7 +1,7 @@
-"""Measure context/reprocessing efficiency of the deterministic core on the synthetic fixtures.
+"""Measure context/reprocessing efficiency of the deterministic core on the synthetic requirements fixture.
 
-Prints JSON. Measures BYTES and COUNTS only — the core makes no model calls, so token counts are not
-available here; real token usage must come from the host (see docs/TEST_REPORT.md for live-run numbers).
+Prints JSON. Measures BYTES and COUNTS only - the core makes no model calls, so token counts are not available here; real token
+usage must come from the host (see docs/TEST_REPORT.md for live-run numbers).
 
     python -m tests.measure_efficiency
 """
@@ -11,8 +11,12 @@ import json
 import re
 import time
 
-from tests.helpers import PLUGIN, BATest, FIXTURE, basemod, checks, gapmod, reqs, stories
+from tests.helpers import BATest, FIXTURE, PLUGIN, acs, changemod, checks, docsync, gapmod, key, reqindex
 from ba_lib import cli
+
+
+def size(obj) -> int:
+    return len(json.dumps(obj, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8"))
 
 
 class Measure(BATest):
@@ -20,82 +24,104 @@ class Measure(BATest):
         pass
 
     def measure(self) -> dict:
-        full = len(FIXTURE.read_bytes())
-        p = self.to_baseline()
-        out = {"fixture": FIXTURE.name, "brd_bytes": full, "requirements": len(p.req_ids()), "gaps": len(p.gaps())}
+        p = self.to_ac_stage()
+        files = sorted(FIXTURE.glob("*.md"))
+        all_bytes = sum(f.stat().st_size for f in files if f.name != "README.md")
+        texts = reqindex.texts(p)
+        sizes = [len(t.encode("utf-8")) for t in texts.values()]
+        out = {"fixture": FIXTURE.name, "requirement_files": len(files) - 1, "requirement_bytes": all_bytes,
+               "requirements": len(texts), "gaps": len(p.gaps())}
+        out["per_requirement_bytes"] = {"mean": round(sum(sizes) / len(sizes), 1), "max": max(sizes)}
+        out["req_show_vs_all_files"] = f"{max(sizes) / all_bytes:.0%} (largest single requirement) of all requirement text"
 
-        sec_bytes = [len(reqs.source_section(p, s["section_id"])["text"].encode("utf-8")) for s in p.source_metadata()["sections"]]
-        out["per_section_bytes"] = {"mean": round(sum(sec_bytes) / len(sec_bytes), 1), "max": max(sec_bytes)}
-        out["section_context_vs_full_brd"] = f"{max(sec_bytes) / full:.0%} (largest single section) of the full BRD"
-
-        gaps = [g for g in p.gaps()]
-        reqmap = {r["requirement_id"]: r for r in p.requirements()}
-        packet = [len(json.dumps(gapmod._packet(p, g, reqmap)).encode("utf-8")) for g in gaps]
-        all_reqs = sum(len(json.dumps(r).encode("utf-8")) for r in reqmap.values())
+        reqmap = gapmod._reqmap(p)
+        packet = [size(gapmod._packet(p, g, reqmap)) for g in p.gaps()]
         out["gap_packet_bytes_mean"] = round(sum(packet) / len(packet), 1)
-        out["gap_packet_vs_all_requirements"] = f"{(sum(packet) / len(packet)) / all_reqs:.0%}"
+        out["gap_packet_vs_all_requirement_text"] = f"{(sum(packet) / len(packet)) / all_bytes:.0%}"
+
+        acs.add_acs(p, [self.ac_item(r) for r in ("LIB-001", "LIB-002", "LIB-003")])
+        view = acs.next_ac(p, key("LIB-001"))["acs"][0]
+        out["ac_card_bytes"] = size(view["present"])
+        for r in ("LIB-001", "LIB-002", "LIB-003"):
+            self.approve(p, r)
 
         t = time.perf_counter()
-        again = basemod.create(p)
-        out["baseline_recreate_unchanged"] = {"reused": again["reused"], "ms": round((time.perf_counter() - t) * 1000, 1)}
+        again = docsync.refresh(p)
+        out["render_unchanged"] = {"files_written": len(again["written"]), "ms": round((time.perf_counter() - t) * 1000, 1)}
+        enriched = sum(f.stat().st_size for f in p.enriched_root.rglob("*.md"))
+        out["enriched_bytes"] = enriched
+        out["enriched_overhead_vs_source"] = f"{(enriched - all_bytes) / all_bytes:.0%}"
 
-        # incremental re-analysis after a BRD edit
-        brd = self.tmp / "inputs" / "brd.md"
-        brd.write_bytes(brd.read_bytes().replace(b"within 14 days", b"within 21 days"))
+        # incremental re-analysis after an upstream edit: only the touched requirement is reassessed
+        f = self.src / "membership.md"
+        f.write_bytes(f.read_bytes().replace(b"within 14 days", b"within 21 days"))
         t = time.perf_counter()
-        ch = reqs.source_check(p)
-        out["source_change"] = {"requirements_total": len(p.req_ids()), "requirements_to_reassess": len(ch["affected_requirement_ids"]),
-                                "reassessed_fraction": f"{len(ch['affected_requirement_ids']) / len(p.req_ids()):.0%}",
-                                "sections_changed": len(ch["diff"]["changed"]), "sections_unchanged": len(ch["diff"]["unchanged"]),
+        ch = changemod.check(p, False)
+        imp = ch["changes"][0]["impact"]
+        out["source_change"] = {"requirements_total": len(texts), "requirements_to_reassess": len(imp["affected_requirements"]),
+                                "reassessed_fraction": f"{len(imp['affected_requirements']) / len(texts):.0%}",
                                 "ms": round((time.perf_counter() - t) * 1000, 1)}
         out["prompt_surface_bytes"] = self.prompt_surface()
         out["cli_output_bytes"] = self.cli_outputs()
         out["model_calls_made_by_core"] = 0
-        out["artifact_bytes_total"] = sum(f.stat().st_size for f in p.root.rglob("*") if f.is_file())
+        out["artifact_bytes_total"] = sum(x.stat().st_size for x in p.root.rglob("*") if x.is_file())
         return out
-
 
     @staticmethod
     def prompt_surface() -> dict:
-        """Bytes of instructions a model loads per stage (skills and references are read only when their branch is reached)."""
-        size = lambda *names: sum((PLUGIN / n).stat().st_size for n in names)
-        sk = lambda n: "skills/ba-workflow/SKILL.md" if n == "ba-workflow" else f"skills/ba-workflow/references/stages/{n}.md"
-        sub = lambda n, f: f"skills/ba-workflow/references/stages/{n}/{f}.md"
-        descs = sum(len(re.search(r"^description: (.*)$", f.read_text(encoding="utf-8"), re.M).group(1)) for f in PLUGIN.glob("skills/*/SKILL.md"))
-        return {
-            "skill_descriptions_always_loaded_chars": descs,
-            "gap_session": size(sk("ba-workflow"), sk("gap-resolution")),
-            "gap_session_with_validate_and_actions": size(sk("ba-workflow"), sk("gap-resolution"), sub("gap-resolution", "validate-and-resolve"),
-                                                           sub("gap-resolution", "actions")),
-            "story_session": size(sk("ba-workflow"), sk("story-review")),
-            "triage_gaps_command": size("commands/triage-gaps.md", sk("ba-workflow"), sk("gap-resolution"), sub("gap-resolution", "triage")),
-            "triage_stories_command": size("commands/triage-stories.md", sk("ba-workflow"), sk("story-review"), sub("story-review", "triage")),
-        }
+        """Bytes of instructions a model loads (skills and references are read only when their branch is reached)."""
+        def size_of(*paths):
+            return sum(x.stat().st_size for x in paths if x.exists())
+        stages = PLUGIN / "skills" / "ba-workflow" / "references" / "stages"
+        descs = sum(len(m.group(1)) for f in PLUGIN.glob("skills/*/SKILL.md") if (m := re.search(r"^description: (.*)$", f.read_text(encoding="utf-8"), re.M)))
+        out = {"skill_descriptions_always_loaded_chars": descs, "router": size_of(PLUGIN / "skills" / "ba-workflow" / "SKILL.md")}
+        for f in sorted(stages.glob("*.md")):
+            out[f"stage:{f.stem}"] = size_of(f)
+        out["commands"] = {f.stem: size_of(f) for f in sorted((PLUGIN / "commands").glob("*.md"))}
+        return out
 
     def cli_outputs(self) -> dict:
-        """Bytes of the CLI results a model reads while working one gap and one story."""
-        from tests.test_context.test_context import Flow
-        f = Flow()
-        f.setUp()
-        try:
-            p = f.after_gap_triage()
-            sizes = {}
-            for label, argv in (("gaps_triage", ("gaps", "triage")), ("story_triage", ("story", "triage")),
-                                ("story_next", ("story", "next", "--id", "US-003")), ("baseline_create", ("baseline", "create")),
-                                ("status", ("status",))):
-                buf = io.StringIO()
-                with contextlib.redirect_stdout(buf):
-                    cli.main(["--root", str(p.root), *argv])
-                sizes[label] = len(buf.getvalue().encode("utf-8"))
-            return sizes
-        finally:
-            f._cleanup()
+        """Bytes of the CLI results a model reads while working one gap and one requirement's criteria through the real CLI."""
+        root = self.tmp / "cli"
+
+        def ba(*argv):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                cli.main(["--root", str(root), *argv])
+            text = buf.getvalue()
+            return len(text.encode("utf-8")), json.loads(text) if text.lstrip().startswith("{") else text
+
+        sizes = {}
+        src = self.reqs_copy("cli-src")
+        sizes["init"], _ = ba("init", "--requirements", str(src))
+        gf = self.tmp / "g.json"
+        gf.write_text(json.dumps(self.gap_items()[:1]), encoding="utf-8")
+        sizes["gaps add"], _ = ba("gaps", "add", "--file", str(gf))
+        ba("owner", "set", "--name", "Priya Nair", "--role", "Product Owner")
+        sizes["gaps next"], nxt = ba("gaps", "next")
+        sizes["gap answer"], ans = ba("gap", "answer", "GAP-001", "--response", "R10 per day, capped at R200.", "--respondent-name", "Priya Nair",
+                                      "--respondent-role", "Product Owner")
+        sizes["gap resolve"], _ = ba("gap", "resolve", "GAP-001", "--answer-id", "A1", "--interpretation", "Fine is R10 per day, maximum R200 per loan.",
+                                     "--reviewed", ",".join(c["artifact_id"] for c in ans.get("candidate_conflicts", [])))
+        ba("gaps", "commit", "--cross-pass-done")
+        sizes["req list"], _ = ba("req", "list")
+        sizes["req show"], _ = ba("req", "show", "LIB-006")
+        af = self.tmp / "a.json"
+        af.write_text(json.dumps([self.ac_item("LIB-006")]), encoding="utf-8")
+        sizes["ac add"], _ = ba("ac", "add", "--file", str(af))
+        sizes["ac next"], _ = ba("ac", "next")
+        sizes["ac approve"], _ = ba("ac", "approve", "LIB-006", "--version", "1", "--statement", "Approved.")
+        sizes["changes check (nothing changed)"], _ = ba("changes", "check")
+        sizes["doc check"], _ = ba("doc", "check")
+        sizes["validate"], _ = ba("validate")
+        sizes["status (text)"], _ = ba("status")
+        return sizes
 
 
 if __name__ == "__main__":
     m = Measure()
     m.setUp()
     try:
-        print(json.dumps(m.measure(), indent=2))
+        print(json.dumps(m.measure(), indent=2, ensure_ascii=False))
     finally:
         m._cleanup()

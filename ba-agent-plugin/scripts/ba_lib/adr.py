@@ -9,7 +9,7 @@ from .util import atomic_write_text, human_ist
 LOG_NAME = "ADR-LOG.md"
 
 # event type -> (label, folders whose log lists it). "" is the project root, which lists every decision.
-_GAPS, _DEC, _REQ, _BASE, _CHG = "gaps", "decisions", "atomic-requirements", "baselines", "changes"
+_GAPS, _DEC, _CHG, _APPR = "gaps", "decisions", "changes", "acceptance/approved"
 EVENTS = {
     "GAP_RESOLVED": ("Gap closed, decision recorded", (_GAPS, _DEC)),
     "GAP_ANSWER_RECEIVED": ("Answer received", (_GAPS,)),
@@ -19,16 +19,13 @@ EVENTS = {
     "DECISION_OWNER_SET": ("Decision owner set", (_DEC,)),
     "DECISION_OWNER_CHANGED": ("Decision owner changed", (_DEC,)),
     "POLICY_CHANGED": ("Policy changed", (_GAPS, _DEC)),
-    "REQUIREMENTS_COMMITTED": ("Requirements committed", (_REQ,)),
-    "REQUIREMENT_REMOVED": ("Requirement removed", (_REQ,)),
-    "BASELINE_APPROVED": ("Baseline approved", (_BASE,)),
-    "STORY_APPROVED": ("Story approved", ("stories/approved",)),
-    "STORY_CHANGES_REQUESTED": ("Story not approved (changes requested)", ("stories/unapproved",)),
-    "STORY_DEFERRED": ("Story deferred", ("stories/deferred",)),
-    "STORY_IMPACT_CLEARED": ("Story impact cleared", ("stories/approved", "stories/candidates")),
-    "STORY_RESTORED": ("Approved story restored", ("stories/approved", _CHG)),
-    "SOURCE_CHANGE_ACCEPTED": ("BRD change accepted", (_CHG,)),
-    "SOURCE_CHANGE_WITHDRAWN": ("BRD change withdrawn", (_CHG,)),
+    "UPSTREAM_CHANGE_REQUIRED": ("Decision differs from the requirement text (upstream change needed)", (_GAPS, _DEC)),
+    "AC_APPROVED": ("Acceptance criteria approved", (_APPR,)),
+    "AC_CHANGES_REQUESTED": ("Acceptance criteria not approved (changes requested)", ("acceptance/unapproved",)),
+    "AC_DEFERRED": ("Acceptance criteria deferred", ("acceptance/deferred",)),
+    "AC_IMPACT_CLEARED": ("Acceptance-criteria impact cleared", (_APPR, "acceptance/candidates")),
+    "AC_RESTORED": ("Approved acceptance criteria restored", (_APPR, _CHG)),
+    "AC_ARCHIVED": ("Acceptance criteria archived (requirement removed)", ("acceptance/archive", _CHG)),
     "CHANGE_APPLIED": ("Change applied", (_CHG,)),
     "CHANGE_ITEM_DISMISSED": ("Change item dismissed", (_CHG,)),
 }
@@ -51,19 +48,15 @@ def _who(ev: dict) -> str:
 
 def _what(ev: dict) -> str:
     t = ev["event_type"]
-    if t.startswith("STORY_"):
+    if t.startswith("AC_"):
         v = ev.get("version")
-        return f"{ev.get('story_id', '')}" + (f" v{v}" if v else "")
+        return f"{ev.get('req_key', '')}" + (f" v{v}" if v else "")
     if t == "GAP_RESOLVED":
         return f"{ev.get('gap_id')} → {ev.get('decision_id')}"
     if t == "GAP_CARRIED_FORWARD_BULK":
         return ", ".join(ev.get("gap_ids") or [])
-    if t == "BASELINE_APPROVED":
-        return f"baseline v{ev.get('version')}"
-    if t == "REQUIREMENT_REMOVED":
-        return ev.get("requirement_id", "")
-    if t == "REQUIREMENTS_COMMITTED":
-        return f"{ev.get('count')} requirements"
+    if t == "UPSTREAM_CHANGE_REQUIRED":
+        return f"{ev.get('gap_id')} → {', '.join(ev.get('req_keys') or [])}"
     return ev.get("gap_id") or ev.get("change_id") or ev.get("decision_id") or ev.get("item_id") or ""
 
 
@@ -96,7 +89,7 @@ def _render(folder: str, events: list[dict]) -> str:
 def log_folders() -> tuple[str, ...]:
     """Folders that carry a log: every artifact folder, with the three gap folders (open/deferred/resolved) sharing the one in `gaps/`."""
     from .project import SPLIT_DIRS  # late: project imports this module
-    return ("gaps",) + tuple(d for d in SPLIT_DIRS if not d.startswith("gaps/"))
+    return ("gaps",) + tuple(d for d in SPLIT_DIRS if not d.startswith("gaps/") and d != "index")
 
 
 def refresh(p) -> None:

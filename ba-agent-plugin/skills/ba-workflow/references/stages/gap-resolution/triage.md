@@ -9,4 +9,4 @@ Triage reviews every unresolved gap — `OPEN` (presented, answered later, reope
    - **Explain / Carry Forward / Defer / Answer Later / Keep**: `actions.md`. A deferred gap's `Keep Deferred` and a carried gap's `Keep Carried Forward` call `gap keep`.
    - **Skip / stop**: change nothing; it is listed again next time.
 4. State is saved as it happens, so an interrupted triage resumes by running `gaps triage` again — resolved gaps drop out, the rest keep their state.
-5. Finish with `status` and report in 3–4 lines: resolved, deferred, carried forward, still open, and which still block stories. If gaps were resolved while stories exist, the affected stories are flagged and the baseline is stale: say that `/ba-agent:triage-stories` refreshes the baseline and updates them as its first step.
+5. Finish with `status` and report in 3–4 lines: resolved, deferred, carried forward, still open, and which still block acceptance criteria. If gaps were resolved while criteria exist, the affected records are flagged: say that `/ba-agent:triage-ac` updates them. Requirements that are no longer blocked can now get criteria (`../acceptance-criteria.md`).

@@ -3,7 +3,7 @@
 **Category:** $category  
 **Priority:** $priority  
 **Status:** $status  
-**Impacted requirements:** $impacted_requirement_ids  
+**Impacted requirements:** $impacted_req_keys  
 **Decision owner:** $decision_owner  
 **Material (needs owner confirmation):** $material
 

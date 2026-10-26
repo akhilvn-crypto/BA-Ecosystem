@@ -6,7 +6,7 @@ import unittest
 from datetime import timedelta
 from pathlib import Path
 
-from tests.helpers import BATest, FakeClock, CLOCK_START, checks, gapmod, option_labels, projmod, util
+from tests.helpers import BATest, FakeClock, CLOCK_START, acs, checks, gapmod, key, option_labels, projmod, util
 from ba_lib.project import Project
 from ba_lib.util import BAError
 
@@ -54,16 +54,18 @@ class PromptOptionTests(Base):
     def test_suggested_answer_only_when_evidence_backed(self):
         p = self.with_requirements()
         items = self.gap_items()
-        items[0]["suggested_answer"] = {"answer": "R10 per day, max R200", "source": "BRD 3.2 and REQ-006"}
+        items[0]["suggested_answer"] = {"answer": "R10 per day, max R200", "source": "lending.md and LIB-006"}
         items[1]["suggested_answer"] = {"answer": "3 seconds"}  # no source
         self.assertEqual(code_of(gapmod.add_gaps, p, items), "GAPS_REJECTED")
-        items[1]["suggested_answer"] = {"answer": "3 seconds", "source": "see REQ-099"}  # unknown artifact
+        items[1]["suggested_answer"] = {"answer": "3 seconds", "source": "see LIB-099"}  # unknown requirement
+        self.assertEqual(code_of(gapmod.add_gaps, p, items), "GAPS_REJECTED")
+        items[1]["suggested_answer"] = {"answer": "3 seconds", "source": "see DEC-099"}  # unknown decision
         self.assertEqual(code_of(gapmod.add_gaps, p, items), "GAPS_REJECTED")
         del items[1]["suggested_answer"]
         gapmod.add_gaps(p, items)
         self.set_owner(p)
         by_id = {g["gap_id"]: g for g in gapmod.next_gaps(p, 3)["gaps"]}
-        self.assertEqual(by_id["GAP-001"]["suggested_answer"], {"answer": "R10 per day, max R200", "source": "BRD 3.2 and REQ-006"})
+        self.assertEqual(by_id["GAP-001"]["suggested_answer"], {"answer": "R10 per day, max R200", "source": "lending.md and LIB-006"})
         self.assertIsNone(by_id["GAP-002"]["suggested_answer"])
         self.assertEqual(p.gap("GAP-001")["answers"], [], "a suggestion is never recorded as an answer")
 
@@ -73,8 +75,8 @@ class PromptOptionTests(Base):
         gapmod.set_policy(p, None, *OWNER, "Revisit dates are mandatory for high priority.", ["HIGH", "CRITICAL"])
         out = gapmod.next_gaps(p, 3)
         by_id = {g["gap_id"]: g for g in out["gaps"]}
-        self.assertTrue(by_id["GAP-001"]["blocks_stories"] and by_id["GAP-001"]["defer_requires_revisit_date"])
-        self.assertTrue(by_id["GAP-002"]["blocks_stories"] and not by_id["GAP-002"]["defer_requires_revisit_date"],
+        self.assertTrue(by_id["GAP-001"]["blocks_ac"] and by_id["GAP-001"]["defer_requires_revisit_date"])
+        self.assertTrue(by_id["GAP-002"]["blocks_ac"] and not by_id["GAP-002"]["defer_requires_revisit_date"],
                         "strict default blocks MEDIUM too")
         self.assertEqual(sorted(out["high_priority_outstanding"]), ["GAP-001", "GAP-003"])
 
@@ -84,7 +86,7 @@ class AnswerLaterTests(Base):
         p = self.ready()
         out = gapmod.answer_later(p, "GAP-001")
         g = p.gap("GAP-001")
-        self.assertEqual((g["status"], g["skipped_count"], out["blocks_stories"]), ("OPEN", 1, True))
+        self.assertEqual((g["status"], g["skipped_count"], out["blocks_ac"]), ("OPEN", 1, True))
         self.assertIsNone(g["deferral"])
         ev = self.audit(p, "GAP_ANSWER_LATER")[0]
         self.assertRegex(ev["at_ist"], r"\+05:30$")
@@ -141,7 +143,7 @@ class DeferTests(Base):
         self.assertEqual((ev["actor"]["name"], ev["decision_owner"]["name"], ev["reason"], ev["at_ist"]),
                          ("Sam Dsouza", "Priya Nair", "Waiting for Finance sign-off", d["at_ist"]))
         self.assertEqual(g["history"][-1]["to"], "DEFERRED")
-        self.assertTrue(out["blocks_stories"])
+        self.assertTrue(out["blocks_ac"])
         self.assertIn("Sam Dsouza", (p.root / "gaps/deferred/md/GAP-001.md").read_text(encoding="utf-8"))
         self.assertTrue(checks.validate_project(p)["ok"])
 
@@ -150,7 +152,7 @@ class DeferTests(Base):
         gapmod.defer(p, "GAP-001", "Waiting for Finance", by_name=OWNER[0], by_role=OWNER[1])
         gapmod.defer(p, "GAP-002", "Waiting for performance team", by_name=OWNER[0], by_role=OWNER[1])
         self.assertEqual(code_of(gapmod.resolve, p, "GAP-001", "A1", "x", *OWNER, "x", "x"), "NOT_PRESENTED")
-        self.assertEqual(gapmod.blocked_requirements(p)["REQ-006"], ["GAP-001"])
+        self.assertEqual(gapmod.blocked_requirements(p)[key("LIB-006")], ["GAP-001"])
         self.assertIn("GAP-001", checks.status_report(p)["gaps"]["blocking_unresolved"])
         self.assertNotIn("GAP-001", [g["gap_id"] for g in gapmod.next_gaps(p, 10)["gaps"]])
 
@@ -196,13 +198,12 @@ class ValidatedResolutionTests(Base):
         p = self.ready()
         a1 = gapmod.record_answer(p, "GAP-003", "Allow at most 8 books at the same time instead.")
         ids = [c["artifact_id"] for c in a1["candidate_conflicts"]]
-        self.assertIn("REQ-003", ids)
-        self.assertTrue(any(i.startswith("REQ-003/BRD") for i in ids), "the BRD excerpt is checked too")
+        self.assertIn("LIB-003", ids)
 
         def resolve(aid, **k):
             return gapmod.resolve(p, "GAP-003", aid, "A member may borrow up to 8 books.", *OWNER, "x", "Yes.", **k)
         self.assertEqual(code_of(resolve, a1["answer_id"]), "CONFLICT_REVIEW_REQUIRED")
-        gapmod.record_conflict(p, "GAP-003", a1["answer_id"], ["REQ-003"], "REQ-003 says at most 5; the answer says 8.")
+        gapmod.record_conflict(p, "GAP-003", a1["answer_id"], ["LIB-003"], "LIB-003 says at most 5; the answer says 8.")
         self.assertEqual(code_of(resolve, a1["answer_id"]), "CONFLICT_UNRESOLVED")
         self.assertEqual(p.gap("GAP-003")["status"], "WAITING_FOR_ANSWER")
         a2 = gapmod.record_answer(p, "GAP-003", "Sorry, keep the limit of 5; a 6th borrow is rejected with a message.")
@@ -224,13 +225,13 @@ class ValidatedResolutionTests(Base):
         p = self.ready()
         gapmod.set_policy(p, True, *OWNER, "Carrying non-blocking gaps is acceptable.")
         blocked = gapmod.blocked_requirements(p)
-        self.assertIn("REQ-006", blocked, "HIGH + material")
-        self.assertIn("REQ-003", blocked, "HIGH")
-        self.assertNotIn("REQ-008", blocked, "MEDIUM and not material: policy applies as before")
+        self.assertIn(key("LIB-006"), blocked, "HIGH + material")
+        self.assertIn(key("LIB-003"), blocked, "HIGH")
+        self.assertNotIn(key("LIB-007"), blocked, "MEDIUM and not material: policy applies as before")
         gaps = p.gaps()
         next(x for x in gaps if x["gap_id"] == "GAP-002").update(material=True)
         p.save_gaps(gaps, touched=["GAP-002"])
-        self.assertIn("REQ-008", gapmod.blocked_requirements(p), "a material (compliance-sensitive) gap always blocks")
+        self.assertIn(key("LIB-007"), gapmod.blocked_requirements(p), "a material (compliance-sensitive) gap always blocks")
 
 
 class InterruptionTests(Base):
@@ -280,6 +281,65 @@ class InterruptionTests(Base):
         self.assertEqual(q.gap("GAP-003")["answers"][0]["response"], "Reject the 6th borrow.")
         self.assertEqual(q.state["pending_gap_ids"], ["GAP-001", "GAP-002", "GAP-003"])
         self.assertTrue(checks.validate_project(q)["ok"])
+
+
+class RequirementReferenceTests(Base):
+    def test_evidence_quote_is_checked_against_the_requirement_text(self):
+        p = self.with_requirements()
+        items = self.gap_items()
+        items[0]["evidence_quote"] = "The fine is 7 euros per day."
+        with self.assertRaises(BAError) as cm:
+            gapmod.add_gaps(p, items)
+        self.assertEqual(cm.exception.code, "GAPS_REJECTED")
+        self.assertIn("evidence_quote was not found", cm.exception.message)
+        self.assertEqual(p.gaps(), [], "one bad item saves nothing")
+        items[0]["evidence_quote"] = "**The fine rate is to be decided.**"  # formatting aside, still a verbatim quote
+        gapmod.add_gaps(p, items)
+        self.assertEqual(p.gap("GAP-001")["evidence_quote"], "**The fine rate is to be decided.**")
+
+    def test_bare_ids_resolve_when_unique_and_collisions_need_the_full_key(self):
+        src = self.reqs_copy("dups")
+        self.write_req(src, "extra.md", "# Extra\n\n### LIB-001 Another thing\nThe system shall also do another thing entirely.\n")
+        p = self.new_project(src=src)
+        item = self.gap_items()[0]
+        item["impacted_req_keys"] = ["LIB-006"]  # unique bare ID
+        gapmod.add_gaps(p, [item])
+        self.assertEqual(p.gap("GAP-001")["impacted_req_keys"], [key("LIB-006")])
+        item = dict(self.gap_items()[1], impacted_req_keys=["LIB-001"])
+        with self.assertRaises(BAError) as cm:
+            gapmod.add_gaps(p, [item])
+        self.assertIn("matches several requirements", cm.exception.message)
+        self.assertEqual(code_of(p.req_key, "LIB-001"), "AMBIGUOUS_REQUIREMENT")
+        self.assertEqual(code_of(p.req_key, "LIB-999"), "UNKNOWN_REQUIREMENT")
+        self.assertEqual(p.req_key("extra.md::LIB-001"), "extra.md::LIB-001")
+        self.assertEqual(p.req_key("membership.md::LIB-001"), "membership.md::LIB-001")
+        gapmod.add_gaps(p, [dict(self.gap_items()[1], impacted_req_keys=["extra.md::LIB-001"])])
+
+    def test_confirmed_change_against_a_requirement_is_recorded_but_never_edits_the_source(self):
+        p = self.ready()
+        before = {f.name: f.read_bytes() for f in self.src.iterdir() if f.is_file()}
+        a = gapmod.record_answer(p, "GAP-003", "Allow at most 8 books at the same time instead.")
+        out = gapmod.resolve(p, "GAP-003", a["answer_id"], "A member may borrow up to 8 books at the same time.", *OWNER, "Owner changes the rule.",
+                             "Yes, change it to 8.", conflict_status="CHANGE_CONFIRMED", conflicting_ids=["LIB-003"],
+                             change_by_name=OWNER[0], change_by_role=OWNER[1], change_statement="I confirm the limit moves from 5 to 8.")
+        self.assertEqual(out["upstream_change_required"], [key("LIB-003")])
+        ev = self.audit(p, "UPSTREAM_CHANGE_REQUIRED")
+        self.assertEqual((len(ev), ev[0]["req_keys"], ev[0]["decision_id"]), (1, [key("LIB-003")], out["decision_id"]))
+        self.assertIn(key("LIB-003"), p.decisions()[out["decision_id"]]["related_artifact_ids"])
+        self.assertEqual({f.name: f.read_bytes() for f in self.src.iterdir() if f.is_file()}, before, "the supplied files are untouched")
+        self.assertTrue(checks.validate_project(p)["ok"])
+
+    def test_a_new_gap_flags_the_acceptance_criteria_that_already_exist(self):
+        p = self.to_acs(1)
+        acs.approve(p, key("LIB-001"), 1, "Approved.", *OWNER)
+        gapmod.add_gaps(p, [dict(self.gap_items()[1], title="Password policy undefined", question="Which password rules apply at registration?",
+                                 impacted_req_keys=["LIB-001"], priority="LOW")])
+        a = p.read_json(f"acceptance/approved/{projmod.ac_fname(key('LIB-001'))}.json")
+        self.assertTrue(a["impact_review"]["pending"])
+        self.assertIn("GAP-004", a["impact_review"]["reason"])
+        self.assertEqual(p.state["stage"], "WAITING_FOR_GAP_INPUT", "later stages reopen to gap input")
+        self.assertEqual(code_of(acs.confirm_unaffected, p, key("LIB-001"), "Still fine."), "REQUIREMENT_BLOCKED",
+                         "the new gap blocks the requirement (strict default), so the flag cannot be cleared until it is dealt with")
 
 
 class CliTests(BATest):

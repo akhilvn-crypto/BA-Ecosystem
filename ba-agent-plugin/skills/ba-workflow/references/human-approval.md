@@ -7,10 +7,10 @@
 Gap-specific rules (validation, conflicts, material gaps, carry-forward, deferral): `stages/gap-resolution/`.
 
 ## Approvals
-Rule 4 of `../SKILL.md` applies: explicit words, exact version, `--statement`. Specifics: ask for the approver's name and role once; they are optional for stories (store nothing if declined). After any edit the new version needs a new approval; the previously approved version stays in force and in history until then.
+Rule 4 of `../SKILL.md` applies: explicit words, exact version, `--statement`. Specifics: ask for the approver's name and role once; they are optional for acceptance criteria (store nothing if declined). After any edit the new version needs a new approval; the previously approved version stays in force and in history until then.
 
 ## Applying a detected change
-`changes apply` needs a real person's name, role and own words, like an approval, but it approves nothing: it authorises the core to mark artifacts stale or under review after the user has seen what changed and its impact. It never approves a changed story or an accepted BRD, never invalidates a confirmed decision (`gap reopen` is a separate human decision) and never removes an approval. A formatting-only difference needs no one's decision.
+`changes apply` needs a real person's name, role and own words, like an approval, but it approves nothing: it authorises the core to accept the new requirement text and mark artifacts under review after the user has seen what changed and its impact. It never approves changed criteria or the content of a changed requirement, never invalidates a confirmed decision (`gap reopen` is a separate human decision) and never removes an approval. A formatting-only difference needs no one's decision.
 
 ## Timestamps
 Written by the core (IST, rule 2 of `../SKILL.md`). Response time and closure time are separate.

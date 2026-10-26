@@ -9,14 +9,12 @@ from .util import atomic_write_text, human_ist, ist_now_iso
 NAME = "START-HERE.md"
 
 STAGE_TEXT = {
-    "INITIALIZED": "The BRD is being read.",
-    "BRD_PARSED": "The BRD is read. Atomic requirements are being captured.",
-    "REQUIREMENTS_READY": "Requirements are saved. Gaps are being looked for.",
+    "INITIALIZED": "The requirements are being read.",
+    "SOURCE_INDEXED": "The requirements are indexed. Gaps are being looked for.",
     "GAP_ANALYSIS": "Gaps are being looked for.",
     "WAITING_FOR_GAP_INPUT": "Gaps are waiting for answers from the decision owner.",
-    "REQUIREMENTS_BASELINED": "Requirements are baselined. User stories are being drafted.",
-    "STORIES_READY": "User stories are drafted and waiting for your review.",
-    "WAITING_FOR_STORY_REVIEW": "User stories are waiting for your review.",
+    "AC_DRAFTING": "Acceptance criteria are being drafted for the requirements that are not blocked.",
+    "WAITING_FOR_AC_REVIEW": "Acceptance criteria are waiting for your review.",
     "COMPLETED": "Everything is decided and approved.",
     "PAUSED": "Paused. Run /ba-agent:start on this folder to carry on.",
     "BLOCKED": "Blocked. Run /ba-agent:status on this folder to see why.",
@@ -35,29 +33,34 @@ def _row(label: str, n, folder: str | None, note: str = "") -> str:
 
 def render(p) -> str:
     st = p.state
-    b = p.baseline_manifest()
-    approved_v = st.get("baseline_version")
-    baseline = (f"v{approved_v} approved" + (" (needs a refresh)" if b.get("stale") else "")) if approved_v else \
-        ("not approved yet" + (f" (latest: v{b['versions'][-1]['version']} {b['versions'][-1]['status'].lower()})" if b["versions"] else ""))
     owner = st.get("decision_owner")
+    reqs = p.requirements()
+    files = sorted({e["file"] for e in reqs})
+    enriched = p.enriched_root
+    try:
+        enriched_link = f"[enriched]({enriched.relative_to(p.root).as_posix()})"
+    except ValueError:
+        enriched_link = f"`{enriched}`"
     lines = [f"# {st['project_id']} — start here", "",
              f"Updated {human_ist(ist_now_iso()).replace(' (Asia/Kolkata, UTC+05:30)', '')}. "
              "Everything is saved here automatically as you go — there is nothing to copy or export.", "",
              f"**Where you are:** {STAGE_TEXT.get(st['stage'], st['stage'])}  ",
              f"**Decision owner:** {owner['name'] + ' — ' + owner['role'] if owner else 'not named yet'}  ",
+             f"**Your requirements (never changed by the BA Agent):** `{st['source']['path']}`  ",
+             f"**Enriched copies of them** (the same text plus approved acceptance criteria and open gaps): {enriched_link}  ",
              "**To carry on:** run `/ba-agent:start` and choose this folder (or `/ba-agent:review`).", "",
              "| What | How many | Open |", "|---|---|---|",
-             _row("Atomic requirements", _count(p, "atomic-requirements", "REQ-*.md"), "atomic-requirements"),
+             _row("Requirements found", f"{len(reqs)} in {len(files)} file(s)", "index"),
+             _row("Enriched copies", len(files), None, enriched_link),
              _row("Open gaps (waiting for an answer, including carried forward)", _count(p, "gaps/open", "GAP-*.md"), "gaps/open"),
              _row("Deferred gaps", _count(p, "gaps/deferred", "GAP-*.md"), "gaps/deferred"),
              _row("Resolved gaps", _count(p, "gaps/resolved", "GAP-*.md"), "gaps/resolved"),
              _row("Decisions", _count(p, "decisions", "DEC-*.md"), "decisions"),
-             _row("Baseline", baseline, "baselines"),
-             _row("Stories waiting for review", _count(p, "stories/candidates", "US-*.md"), "stories/candidates"),
-             _row("Approved stories", _count(p, "stories/approved", "US-*.md"), "stories/approved"),
-             _row("Stories not approved", _count(p, "stories/unapproved", "US-*.md"), "stories/unapproved"),
-             _row("Deferred stories", _count(p, "stories/deferred", "US-*.md"), "stories/deferred"),
-             _row("Changes found in the BRD or an approved story", _count(p, "changes", "CHG-*.md"), "changes"),
+             _row("Acceptance criteria waiting for review", _count(p, "acceptance/candidates", "*.md"), "acceptance/candidates"),
+             _row("Approved acceptance criteria", _count(p, "acceptance/approved", "*.md"), "acceptance/approved"),
+             _row("Acceptance criteria not approved", _count(p, "acceptance/unapproved", "*.md"), "acceptance/unapproved"),
+             _row("Deferred acceptance criteria", _count(p, "acceptance/deferred", "*.md"), "acceptance/deferred"),
+             _row("Changes found in the requirements or in approved criteria", _count(p, "changes", "CHG-*.md"), "changes"),
              "", "Who decided or approved what, and when: [ADR-LOG.md](ADR-LOG.md). "
              "Each folder above holds the readable files in `md/` and the tool's records in `json/`.", ""]
     return "\n".join(lines)

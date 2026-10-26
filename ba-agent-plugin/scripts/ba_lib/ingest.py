@@ -1,58 +1,53 @@
-"""BRD ingestion: format detection, text extraction, section outline, fingerprints.
+"""Reading requirement files: Markdown only, text normalisation, the formatting-versus-meaning comparison, and a scan for
+text that tries to instruct the assistant.
 
-Supported with the standard library only: Markdown, plain text, DOCX.
-PDF and other formats are reported as unsupported (never silently dropped).
+The supplied files are never modified. Requirements arrive as `.md` from the upstream agent; other formats are refused with a
+plain message rather than converted.
 """
 from __future__ import annotations
 
-import os
 import re
-import zipfile
-import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from .util import BAError, canonical_json, normalize_ws, sha256_file, sha256_text
+from .util import BAError, normalize_ws, sha256_bytes
 
-PARSER_VERSION = "ba-ingest/1.0"
-W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+PARSER_VERSION = "ba-ingest/2.0"
+MARKDOWN_EXT = (".md", ".markdown")
+# Files in a requirements folder that are about the folder, not requirements.
+SKIP_STEMS = {"readme", "changelog", "license", "contributing", "start-here", "adr-log", "index", "toc", "summary"}
 
-SUPPORTED = {".md": "markdown", ".markdown": "markdown", ".txt": "text", ".docx": "docx"}
-UNSUPPORTED_HINT = {
-    ".pdf": "The core reads .md, .txt and .docx only. Do not ask the user to convert it: read the PDF yourself with your own file "
-            "tools, write its text faithfully (headings, lists, tables, nothing added or dropped) to <project folder>/source/<same name>.md, "
-            "tell the user in one line, and run `init` on that .md. The original PDF is left untouched.",
-    ".doc": "The core reads .md, .txt and .docx only. Read the file yourself, save its text faithfully as <project folder>/source/<same name>.md "
-            "and run `init` on that, telling the user in one line.",
-    ".rtf": "The core reads .md, .txt and .docx only. Read the file yourself, save its text faithfully as <project folder>/source/<same name>.md "
-            "and run `init` on that, telling the user in one line.",
-    ".xlsx": "Spreadsheets are not read by the core. Read the relevant sheet(s) yourself, save them faithfully as Markdown tables in "
-             "<project folder>/source/<same name>.md and run `init` on that, telling the user in one line.",
-}
-
-# Heuristic only: surfaces text that tries to instruct the assistant. It is advisory; the real
-# defence is that BRD content is always treated as data (see human-approval rules).
+# Heuristic only: surfaces text that tries to instruct the assistant. It is advisory; the real defence is that requirement
+# text is always treated as data (see the human-approval rules).
 INJECTION_PATTERNS = [
     r"ignore (all |any |the )?(previous|prior|above|earlier) (instructions|rules)",
     r"disregard (all |any |the )?(previous|prior|above|plugin|system)",
     r"(reveal|print|show) (your |the )?(system prompt|instructions)",
     r"you are now\b",
-    r"\bapprove (all|every) (stories|story|requirements?|gaps?)\b",
-    r"mark (all |every )?(gaps?|stories) (as )?(resolved|approved)",
+    r"\bapprove (all|every) (acceptance criteria|criteria|requirements?|gaps?)\b",
+    r"mark (all |every )?(gaps?|criteria) (as )?(resolved|approved)",
     r"(run|execute) (the following|this) (command|script|code)",
     r"\b(curl|wget|Invoke-WebRequest)\b.*https?://",
-    r"(delete|remove|overwrite) (the )?(original|source) (brd|file|document)",
+    r"(delete|remove|overwrite) (the )?(original|source) (requirements?|file|document)",
     r"do not (ask|tell) the user",
 ]
 _INJ = [re.compile(p, re.I) for p in INJECTION_PATTERNS]
 
+UNSUPPORTED_HINT = ("The BA Agent reads Markdown (.md) requirement files only. {name} is a {ext} file: ask the upstream agent for "
+                    "a Markdown export, or save its text as .md yourself (headings, lists and tables unchanged) and point the project at that.")
 
-def detect_format(path: Path) -> str:
-    ext = path.suffix.lower()
-    if ext in SUPPORTED:
-        return SUPPORTED[ext]
-    hint = UNSUPPORTED_HINT.get(ext, f"Unsupported file type {ext or '(none)'}. Supported: "
-                                + ", ".join(sorted(SUPPORTED)) + ".")
-    raise BAError("UNSUPPORTED_FORMAT", hint, extension=ext)
+
+def check_markdown(path: Path) -> None:
+    if path.suffix.lower() not in MARKDOWN_EXT:
+        raise BAError("UNSUPPORTED_FORMAT", UNSUPPORTED_HINT.format(name=path.name, ext=path.suffix or "(no extension)"),
+                      extension=path.suffix.lower())
+
+
+def decode(data: bytes, name: str = "file") -> str:
+    """UTF-8 text with a BOM, if any, kept as its first character (so a copy of the text is byte-identical)."""
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise BAError("UNREADABLE_SOURCE", f"{name} is not valid UTF-8 text. Save it as UTF-8 and try again.", file=name)
 
 
 def normalize_text(text: str) -> str:
@@ -66,120 +61,11 @@ def normalize_text(text: str) -> str:
     return "\n".join(out).strip("\n") + "\n"
 
 
-def _docx_text(path: Path) -> tuple[str, list[str]]:
-    warnings: list[str] = []
-    try:
-        with zipfile.ZipFile(path) as z:
-            names = set(z.namelist())
-            if "word/document.xml" not in names:
-                raise BAError("UNREADABLE_SOURCE", "DOCX has no word/document.xml; the file may be corrupt.")
-            root = ET.fromstring(z.read("word/document.xml"))
-            if any(n.startswith("word/media/") for n in names):
-                warnings.append("DOCX contains images; image content is NOT extracted.")
-            if any(n.startswith("word/header") or n.startswith("word/footer") for n in names):
-                warnings.append("DOCX headers/footers are not extracted.")
-    except zipfile.BadZipFile:
-        raise BAError("UNREADABLE_SOURCE", "File is not a valid DOCX (zip) archive.")
-    except ET.ParseError as e:
-        raise BAError("UNREADABLE_SOURCE", f"DOCX XML could not be parsed: {e}")
-
-    def para_text(p) -> str:
-        parts = []
-        for el in p.iter():
-            if el.tag == W + "t" and el.text:
-                parts.append(el.text)
-            elif el.tag == W + "tab":
-                parts.append("\t")
-            elif el.tag == W + "br":
-                parts.append(" ")
-        return "".join(parts).strip()
-
-    def para_style(p) -> tuple[int, bool]:
-        ppr = p.find(W + "pPr")
-        level, is_list = 0, False
-        if ppr is not None:
-            ps = ppr.find(W + "pStyle")
-            if ps is not None:
-                val = ps.get(W + "val", "")
-                m = re.match(r"(?i)^heading\s*(\d)$", val)
-                if m:
-                    level = int(m.group(1))
-                elif val.lower() == "title":
-                    level = 1
-                elif re.match(r"(?i)^list", val):
-                    is_list = True
-            if ppr.find(W + "numPr") is not None:
-                is_list = True
-        return level, is_list
-
-    lines: list[str] = []
-    body = root.find(W + "body")
-    for child in (body if body is not None else []):
-        if child.tag == W + "p":
-            txt = para_text(child)
-            if not txt:
-                lines.append("")
-                continue
-            level, is_list = para_style(child)
-            if level:
-                lines.append("#" * min(level, 6) + " " + txt)
-            elif is_list:
-                lines.append("- " + txt)
-            else:
-                lines.append(txt)
-        elif child.tag == W + "tbl":
-            lines.append("")
-            first = True
-            for tr in child.iter(W + "tr"):
-                cells = [normalize_ws(" ".join(para_text(p) for p in tc.iter(W + "p"))) for tc in tr.findall(W + "tc")]
-                lines.append("| " + " | ".join(cells) + " |")
-                if first:
-                    lines.append("|" + "---|" * max(len(cells), 1))
-                    first = False
-            lines.append("")
-    return "\n".join(lines), warnings
+def file_hash(data: bytes) -> str:
+    return sha256_bytes(data)
 
 
-def extract(path: Path) -> dict:
-    """Read the source (never modifies it) and return text + metadata."""
-    if not path.exists() or not path.is_file():
-        raise BAError("SOURCE_NOT_FOUND", f"BRD not found: {path}")
-    fmt = detect_format(path)
-    warnings: list[str] = []
-    if fmt == "docx":
-        raw, warnings = _docx_text(path)
-    else:
-        data = path.read_bytes()
-        try:
-            raw = data.decode("utf-8-sig")
-        except UnicodeDecodeError:
-            try:
-                raw = data.decode("cp1252")
-                warnings.append("File was not UTF-8; decoded as Windows-1252. Check special characters.")
-            except UnicodeDecodeError:
-                raise BAError("UNREADABLE_SOURCE", "File is not valid UTF-8 text.")
-    text = normalize_text(raw)
-    if len(text.strip()) < 20:
-        raise BAError("EMPTY_SOURCE", "The BRD has (almost) no extractable text.")
-    sections = parse_sections(text, fmt)
-    suspects = scan_injection(text)
-    if suspects:
-        warnings.append(f"{len(suspects)} line(s) look like instructions aimed at an AI assistant. "
-                        "They are treated as document content only and will not be followed.")
-    return {
-        "format": fmt,
-        "text": text,
-        "fingerprint": sha256_file(path),
-        "text_fingerprint": sha256_text(text),
-        "material_fingerprint": material_fingerprint(sections),
-        "sections": sections,
-        "injection_suspects": suspects,
-        "warnings": warnings,
-        "parser": PARSER_VERSION,
-    }
-
-
-_QUOTES = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"', "–": "-", "—": "-", " ": " "})
+_QUOTES = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"', "–": "-", "—": "-", " ": " "})
 
 
 def material_normalize(text: str) -> str:
@@ -196,111 +82,9 @@ def material_normalize(text: str) -> str:
     return normalize_ws(t)
 
 
-def material_fingerprint(sections: list[dict]) -> str:
-    """Hash of the document's structure and meaning (section levels, title paths and normalised bodies)."""
-    return sha256_text(canonical_json([[s["level"], s["key"], s.get("material_hash")] for s in sections]))
-
-
-_NUM_HEAD = re.compile(r"^(\d+(?:\.\d+){0,5})[.)]?\s+([A-Za-z][^\n]{0,90})$")
-
-
-def parse_sections(text: str, fmt: str) -> list[dict]:
-    lines = text.split("\n")
-    if lines and lines[-1] == "":
-        lines = lines[:-1]
-    heads: list[tuple[int, int, str]] = []
-    fence = False
-    for i, ln in enumerate(lines):
-        if ln.lstrip().startswith("```"):
-            fence = not fence
-            continue
-        if fence:
-            continue
-        m = re.match(r"^(#{1,6})\s+(.+?)\s*#*\s*$", ln)
-        if m:
-            heads.append((i, len(m.group(1)), m.group(2).strip()))
-            continue
-        if fmt == "text":
-            m = _NUM_HEAD.match(ln.strip())
-            if m and not m.group(2).rstrip().endswith((".", ";", ",", ":")):
-                heads.append((i, m.group(1).count(".") + 1, f"{m.group(1)} {m.group(2).strip()}"))
-    sections: list[dict] = []
-
-    def add(sid, title, level, start, end, key):
-        body = "\n".join(lines[start:end]).rstrip()  # trailing blank lines are not content
-        sections.append({
-            "section_id": sid, "title": title, "level": level, "key": key,
-            "line_start": start + 1, "line_end": max(end, start + 1),
-            "hash": sha256_text(body), "material_hash": sha256_text(material_normalize(body)), "has_table": any(l.strip().startswith("|") for l in lines[start:end]),
-        })
-
-    first = heads[0][0] if heads else len(lines)
-    if any(l.strip() for l in lines[:first]):
-        add("S0", "(preamble)", 0, 0, first, "(preamble)")
-    if not heads:
-        if not sections:
-            add("S1", "Document", 1, 0, len(lines), "document")
-        return sections
-    counters = [0] * 7
-    titles = [""] * 7
-    seen: dict[str, int] = {}
-    for n, (idx, level, title) in enumerate(heads):
-        counters[level - 1] += 1
-        titles[level - 1] = normalize_ws(title).lower()
-        for j in range(level, 7):
-            counters[j] = 0
-            titles[j] = ""
-        sid = "S" + ".".join(str(c) for c in counters[:level])
-        key = "/".join(t for t in titles[:level] if t)
-        seen[key] = seen.get(key, 0) + 1
-        if seen[key] > 1:
-            key = f"{key}#{seen[key]}"
-        end = heads[n + 1][0] if n + 1 < len(heads) else len(lines)
-        add(sid, title, level, idx, end, key)
-    return sections
-
-
-def section_text(text: str, sec: dict) -> str:
-    lines = text.split("\n")
-    return "\n".join(lines[sec["line_start"] - 1: sec["line_end"]])
-
-
-BATCH_CHARS = 30000      # about 7.5k tokens of BRD text per helper batch (env BA_BATCH_CHARS or --batch-chars overrides)
-DELEGATE_ABOVE = 60000   # above this much BRD text (~15k tokens), reading in helper agents beats reading here (env BA_DELEGATE_ABOVE or --delegate-above)
-
-
-def _limit(value, env: str, default: int) -> int:
-    for v in (value, os.environ.get(env)):
-        try:
-            if v is not None and int(v) > 0:
-                return int(v)
-        except (TypeError, ValueError):
-            pass
-    return default
-
-
-def outline_batches(meta: dict, delegate_above: int | None = None, batch_chars: int | None = None) -> dict:
-    """Section sizes and a batching plan. When `delegate` is true the BRD is large enough that helper agents may be worth
-    their cold start (each re-reads its batch): the main session asks once and otherwise reads one section at a time."""
-    limit = _limit(batch_chars, "BA_BATCH_CHARS", BATCH_CHARS)
-    sizes = [(s["section_id"], s["title"], len(section_text(meta["text"], s))) for s in meta["sections"]]
-    batches, cur, used = [], [], 0
-    for sid, _, n in sizes:
-        if cur and used + n > limit:
-            batches.append(cur)
-            cur, used = [], 0
-        cur.append(sid)
-        used += n
-    if cur:
-        batches.append(cur)
-    total = sum(n for _, _, n in sizes)
-    return {"outline": [{"id": sid, "title": t, "chars": n} for sid, t, n in sizes], "total_chars": total,
-            "delegate": total > _limit(delegate_above, "BA_DELEGATE_ABOVE", DELEGATE_ABOVE), "batches": batches}
-
-
 def scan_injection(text: str) -> list[dict]:
     hits = []
-    for n, ln in enumerate(text.split("\n"), 1):
+    for n, ln in enumerate(text.replace("\r\n", "\n").replace("\r", "\n").split("\n"), 1):
         for pat in _INJ:
             if pat.search(ln):
                 hits.append({"line": n, "excerpt": normalize_ws(ln)[:140]})
@@ -313,42 +97,6 @@ def _plain(s: str) -> str:
 
 
 def excerpt_in_text(excerpt: str, text: str) -> bool:
+    """Is `excerpt` (a verbatim quote, formatting aside) part of `text`?"""
     ex = _plain(excerpt)
     return bool(ex) and ex in _plain(text)
-
-
-def diff_sections(old: list[dict], new: list[dict]) -> dict:
-    """Section-level diff by key (title path), not by positional id. `changed` = the meaning differs; `formatting_only` =
-    the raw text differs but the normalised text is identical (a section with no recorded material hash is treated as changed)."""
-    o = {s["key"]: s for s in old}
-    n = {s["key"]: s for s in new}
-
-    def same_meaning(k):
-        a, b = o[k].get("material_hash"), n[k].get("material_hash")
-        return bool(a) and a == b
-
-    both = [k for k in n if k in o and n[k]["hash"] != o[k]["hash"]]
-    return {
-        "added": sorted(k for k in n if k not in o),
-        "removed": sorted(k for k in o if k not in n),
-        "changed": sorted(k for k in both if not same_meaning(k)),
-        "formatting_only": sorted(k for k in both if same_meaning(k)),
-        "unchanged": sorted(k for k in n if k in o and n[k]["hash"] == o[k]["hash"]),
-    }
-
-
-def outline_markdown(name: str, meta: dict) -> str:
-    out = [f"# BRD outline — {name}", "",
-           f"- Format: {meta['format']}  ·  Parser: {meta['parser']}",
-           f"- Fingerprint: `{meta['fingerprint']}`",
-           f"- Sections: {len(meta['sections'])}", ""]
-    for s in meta["sections"]:
-        pad = "  " * max(s["level"] - 1, 0)
-        tbl = " · table" if s["has_table"] else ""
-        out.append(f"{pad}- **{s['section_id']}** {s['title']} (lines {s['line_start']}–{s['line_end']}{tbl})")
-    if meta.get("injection_suspects"):
-        out += ["", "## Content flagged as instruction-like (treated as data only)"]
-        out += [f"- line {h['line']}: {h['excerpt']}" for h in meta["injection_suspects"]]
-    if meta.get("warnings"):
-        out += ["", "## Extraction warnings"] + [f"- {w}" for w in meta["warnings"]]
-    return "\n".join(out) + "\n"

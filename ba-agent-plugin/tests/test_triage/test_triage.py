@@ -1,7 +1,7 @@
-"""/ba-agent:triage-gaps and /ba-agent:triage-stories: the listing queues and the state transitions they drive.
+"""/ba-agent:triage-gaps and /ba-agent:triage-ac: the listing queues and the state transitions they drive.
 
-The commands add no business logic of their own - they list (`gaps triage`, `story triage`), present one item
-(`gaps next --id`, `story next --id`) and then call the existing actions. These tests pin that list/present layer and
+The commands add no business logic of their own - they list (`gaps triage`, `ac triage`), present one item
+(`gaps next --id`, `ac next --key`) and then call the existing actions. These tests pin that list/present layer and
 check that every decision made through it keeps the audit trail, traceability, versioning and resume behaviour.
 """
 import json
@@ -11,7 +11,7 @@ import unittest
 from datetime import timedelta
 from pathlib import Path
 
-from tests.helpers import BATest, CLOCK_START, FakeClock, checks, gapmod, option_labels, stories, util
+from tests.helpers import BATest, CLOCK_START, FakeClock, acs, checks, gapmod, key, option_labels, projmod, util
 from ba_lib.project import Project
 from ba_lib.util import BAError
 
@@ -65,16 +65,18 @@ class GapTriageListTests(GapBase):
                                          "at_ist": d["deferral"]["at_ist"], "revisit_by": "2099-01-01", "waiting_on": "Finance team"})
         self.assertTrue(d["deferral"]["at_ist"].endswith("+05:30"))
         self.assertNotIn("decision_owner", d, "the owner is reported once at the top, not on every row")
-        self.assertEqual(d["requirement_ids"], ["REQ-006"])
-        self.assertTrue(d["blocks_stories"])
+        self.assertEqual(d["req_keys"], [key("LIB-006")])
+        self.assertTrue(d["blocks_ac"])
         self.assertEqual(out["decision_owner"], {"name": OWNER[0], "role": OWNER[1]})
 
-    def test_linked_stories_are_listed_for_each_gap(self):
-        p = self.to_stories()  # US-001 -> REQ-001, US-002 -> REQ-002
-        gapmod.add_gaps(p, [dict(self.gap_items()[0], title="Confirmation e-mail wording", question="What must the e-mail say?",
-                                 impacted_requirement_ids=["REQ-002"], priority="LOW", material=False)])
+    def test_linked_acceptance_criteria_are_listed_for_each_gap(self):
+        p = self.to_acs(2)  # criteria for LIB-001 and LIB-002
+        item = dict(self.gap_items()[0], title="Confirmation e-mail wording", question="What must the e-mail say?",
+                    impacted_req_keys=["LIB-002"], priority="LOW", material=False)
+        item.pop("evidence_quote")
+        gapmod.add_gaps(p, [item])
         row = gapmod.triage(p)["gaps"][0]
-        self.assertEqual((row["gap_id"], row["story_ids"], row["requirement_ids"]), ("GAP-004", ["US-002"], ["REQ-002"]))
+        self.assertEqual((row["gap_id"], row["ac_keys"], row["req_keys"]), ("GAP-004", [key("LIB-002")], [key("LIB-002")]))
 
     def test_resolved_gaps_are_not_listed_and_the_status_filter_works(self):
         p = self.seeded()
@@ -96,7 +98,7 @@ class GapTriageListTests(GapBase):
         self.assertEqual({k: (v["status"], v["triage_group"]) for k, v in rows.items()},
                          {"GAP-001": ("OPEN", "OPEN"), "GAP-002": ("OPEN", "OPEN"), "GAP-003": ("WAITING_FOR_ANSWER", "OPEN")})
         self.assertTrue(rows["GAP-002"]["carried_forward"])
-        self.assertFalse(rows["GAP-002"]["blocks_stories"])
+        self.assertFalse(rows["GAP-002"]["blocks_ac"])
         self.assertEqual(rows["GAP-001"]["skipped_count"], 1)
         self.assertEqual(out["counts"]["carried_forward"], 1)
 
@@ -147,7 +149,7 @@ class GapTriageActionTests(GapBase):
         self.assertEqual(option_labels(pk), ["Explain This Question", "Keep Deferred"])
         self.assertIn("Waiting for Finance", pk["present"]["card"], "the deferral history is on the card")
         self.assertFalse(pk["present"]["inline"], "a gap with history needs its card")
-        self.assertEqual(pk["impacted_requirement_ids"], ["REQ-006"])
+        self.assertEqual(pk["impacted_req_keys"], [key("LIB-006")])
 
     def test_viewing_a_carried_forward_gap_changes_nothing_and_offers_keep(self):
         p = self.seeded()
@@ -195,7 +197,7 @@ class GapTriageActionTests(GapBase):
         self.assertEqual(code_of(gapmod.defer, p, "GAP-003", "legal review"), "IDENTITY_REQUIRED")
         out = gapmod.defer(p, "GAP-003", "legal review", by_name="Sam Dsouza", by_role="Business Analyst")
         self.assertEqual(out["status"], "DEFERRED")
-        self.assertTrue(out["blocks_stories"], "deferred HIGH gaps still block")
+        self.assertTrue(out["blocks_ac"], "deferred HIGH gaps still block")
         row = next(r for r in gapmod.triage(p)["gaps"] if r["gap_id"] == "GAP-003")
         self.assertEqual((row["triage_group"], row["deferral"]["by_name"]), ("DEFERRED", "Sam Dsouza"))
         self.assertEqual(self.events(p, "GAP_DEFERRED")[-1]["actor"], {"name": "Sam Dsouza", "role": "Business Analyst"})
@@ -226,12 +228,12 @@ class GapTriageActionTests(GapBase):
         gapmod.defer(p, "GAP-003", "waiting", by_name=OWNER[0], by_role=OWNER[1])
         gapmod.revisit(p, "GAP-003")
         a = gapmod.record_answer(p, "GAP-003", "Allow at most 8 books at the same time instead.")
-        self.assertIn("REQ-003", [c["artifact_id"] for c in a["candidate_conflicts"]])
+        self.assertIn("LIB-003", [c["artifact_id"] for c in a["candidate_conflicts"]])
         self.assertEqual(code_of(gapmod.resolve, p, "GAP-003", a["answer_id"], "Up to 8 books.", *OWNER, "x", "Yes."),
                          "CONFLICT_REVIEW_REQUIRED")
-        gapmod.record_conflict(p, "GAP-003", a["answer_id"], ["REQ-003"], "REQ-003 says at most 5; the answer says 8.")
+        gapmod.record_conflict(p, "GAP-003", a["answer_id"], ["LIB-003"], "LIB-003 says at most 5; the answer says 8.")
         self.assertEqual(code_of(gapmod.resolve, p, "GAP-003", a["answer_id"], "Up to 8 books.", *OWNER, "x", "Yes.",
-                                 reviewed_ids=["REQ-003"]), "CONFLICT_UNRESOLVED")
+                                 reviewed_ids=["LIB-003"]), "CONFLICT_UNRESOLVED")
         self.assertEqual(p.gap("GAP-003")["status"], "WAITING_FOR_ANSWER")
         self.assertIn("GAP-003", ids(gapmod.triage(p)["gaps"]), "still on the triage list")
         self.assertEqual(p.gap("GAP-003")["conflicts"][0]["status"], "OPEN")
@@ -252,208 +254,226 @@ class GapTriageActionTests(GapBase):
         self.assertEqual(checks.status_report(q)["gaps"]["deferred"], ["GAP-001"])
 
 
-class StoryBase(Base):
+class AcBase(Base):
     def three_buckets(self):
-        """US-001 pending review, US-002 not approved, US-003 deferred, US-004 approved."""
-        p = self.to_baseline()
-        stories.add_stories(p, [
-            self.story_item("Register as a member", ("REQ-001",)),
-            self.story_item("Receive a confirmation email", ("REQ-002",),
-                            user_story=dict(role="New member", capability="to receive a confirmation email", value="I know it worked"),
-                            acceptance_criteria=["Given a completed registration, when the account is created, then a confirmation email is sent."]),
-            self.story_item("Limit concurrent borrows", ("REQ-003",),
-                            user_story=dict(role="Member", capability="to borrow up to five books", value="I can read more"),
-                            acceptance_criteria=["Given a member with five loans, when they borrow a sixth book, then it is rejected with a message."]),
-            self.story_item("Record borrow dates", ("REQ-005",),
-                            user_story=dict(role="Librarian", capability="loan dates are recorded", value="I can see what is due"),
-                            acceptance_criteria=["Given a loan, when it is created, then the borrow and due dates are stored."]),
+        """LIB-001 pending review, LIB-002 not approved, LIB-003 deferred, LIB-005 approved."""
+        p = self.to_ac_stage()
+        acs.add_acs(p, [
+            self.ac_item("LIB-001"),
+            self.ac_item("LIB-002", acceptance_criteria=["Given a completed registration, when the account is created, then a confirmation email is sent."]),
+            self.ac_item("LIB-003", acceptance_criteria=["Given a member with five loans, when they borrow a sixth book, then it is rejected with a message."]),
+            self.ac_item("LIB-005", acceptance_criteria=["Given a loan, when it is created, then the borrow and due dates are stored."]),
         ])
-        stories.next_story(p, "US-002")
-        stories.request_changes(p, "US-002", 1, "criteria too vague")
-        stories.next_story(p, "US-003")
-        stories.defer(p, "US-003", 1, "waiting for the policy team")
-        stories.next_story(p, "US-004")
-        stories.approve(p, "US-004", 1, "Approved as written.", *OWNER)
+        acs.next_ac(p, "LIB-002")
+        acs.request_changes(p, "LIB-002", 1, "criteria too vague")
+        acs.next_ac(p, "LIB-003")
+        acs.defer(p, "LIB-003", 1, "waiting for the policy team")
+        acs.next_ac(p, "LIB-005")
+        acs.approve(p, "LIB-005", 1, "Approved as written.", *OWNER)
         return p
 
 
-class StoryTriageListTests(StoryBase):
-    def test_lists_pending_not_approved_and_deferred_but_never_approved_stories(self):
+K1, K2, K3, K5, K6 = (key(r) for r in ("LIB-001", "LIB-002", "LIB-003", "LIB-005", "LIB-006"))
+
+
+def fname(rid):
+    return projmod.ac_fname(key(rid))
+
+
+class AcTriageListTests(AcBase):
+    def test_lists_pending_not_approved_and_deferred_but_never_approved_records(self):
         p = self.three_buckets()
-        out = stories.triage(p)
-        self.assertEqual([(r["story_id"], r["status"], r["bucket"]) for r in out["stories"]],
-                         [("US-001", "CANDIDATE", "candidates"), ("US-002", "CHANGES_REQUESTED", "unapproved"),
-                          ("US-003", "DEFERRED", "deferred")])
+        out = acs.triage(p)
+        self.assertEqual([(r["req_key"], r["status"], r["bucket"]) for r in out["acs"]],
+                         [(K1, "CANDIDATE", "candidates"), (K2, "CHANGES_REQUESTED", "unapproved"), (K3, "DEFERRED", "deferred")])
         self.assertEqual(out["counts"], {"pending_review": 1, "not_approved": 1, "deferred": 1})
-        self.assertEqual(out["eligible"], ["US-001", "US-002", "US-003"])
-        by = {r["story_id"]: r for r in out["stories"]}
-        self.assertEqual(by["US-002"]["last_review_note"]["note"], "criteria too vague")
-        self.assertEqual(by["US-002"]["bucket"], "unapproved")
-        self.assertEqual(by["US-003"]["deferral"]["reason"], "waiting for the policy team")
-        self.assertTrue(by["US-003"]["deferral"]["at_ist"].endswith("+05:30"))
-        self.assertEqual(by["US-001"]["requirement_ids"], ["REQ-001"])
-        self.assertEqual(by["US-001"]["readiness"], "READY_FOR_DEVELOPMENT")
+        self.assertEqual(out["eligible"], [K1, K2, K3])
+        by = {r["req_key"]: r for r in out["acs"]}
+        self.assertEqual(by[K2]["last_review_note"]["note"], "criteria too vague")
+        self.assertEqual(by[K2]["bucket"], "unapproved")
+        self.assertEqual(by[K3]["deferral"]["reason"], "waiting for the policy team")
+        self.assertTrue(by[K3]["deferral"]["at_ist"].endswith("+05:30"))
+        self.assertEqual(by[K1]["label"], "LIB-001")
+        self.assertEqual(by[K1]["readiness"], "READY_FOR_DEVELOPMENT")
 
-    def test_in_review_stories_come_first_and_the_listing_changes_nothing(self):
+    def test_in_review_records_come_first_and_the_listing_changes_nothing(self):
         p = self.three_buckets()
-        stories.next_story(p, "US-001")  # CANDIDATE -> IN_REVIEW
-        snap = (json.dumps([s for _, s in p.all_stories()], sort_keys=True), len(p.audit_events()), p.state["stage"])
-        out = stories.triage(p)
-        self.assertEqual(out["stories"][0]["status"], "IN_REVIEW")
-        self.assertEqual((json.dumps([s for _, s in p.all_stories()], sort_keys=True), len(p.audit_events()), p.state["stage"]), snap)
+        acs.next_ac(p, "LIB-001")  # CANDIDATE -> IN_REVIEW
+        snap = (json.dumps([a for _, a in p.all_acs()], sort_keys=True), len(p.audit_events()), p.state["stage"])
+        out = acs.triage(p)
+        self.assertEqual(out["acs"][0]["status"], "IN_REVIEW")
+        self.assertEqual((json.dumps([a for _, a in p.all_acs()], sort_keys=True), len(p.audit_events()), p.state["stage"]), snap)
 
-    def test_story_with_a_blocking_gap_or_impact_flag_is_listed_but_not_eligible(self):
-        p = self.to_baseline()
-        stories.add_stories(p, [self.story_item("Charge a late fine", ("REQ-006",),
-                                                user_story=dict(role="Librarian", capability="late returns are fined", value="revenue is protected"),
-                                                acceptance_criteria=["Given a late return, when it is processed, then a fine is charged."])])
-        stories.next_story(p)
-        stories.defer(p, "US-001", 1, "unsure about the fine")
-        self.assertEqual(stories.triage(p)["eligible"], ["US-001"])
+    def test_record_with_a_blocking_gap_or_impact_flag_is_listed_but_not_eligible(self):
+        p = self.to_ac_stage()
+        acs.add_acs(p, [self.ac_item("LIB-006", acceptance_criteria=["Given a late return, when it is processed, then a fine is charged."])])
+        acs.next_ac(p)
+        acs.defer(p, "LIB-006", 1, "unsure about the fine")
+        self.assertEqual(acs.triage(p)["eligible"], [K6])
         gapmod.reopen(p, "GAP-001", "Finance changed the fine rule", *OWNER)
-        out = stories.triage(p)
-        row = out["stories"][0]
+        out = acs.triage(p)
+        row = out["acs"][0]
         self.assertFalse(row["eligible"])
-        self.assertEqual(out["not_eligible"], ["US-001"])
+        self.assertEqual(out["not_eligible"], [K6])
         self.assertTrue(any("GAP-001" in b for b in row["blockers"]), row["blockers"])
-        self.assertEqual([x["id"] for x in out["preflight"]], ["baseline_stale"], "shared problems are reported once, not per row")
-        self.assertFalse(any("baseline" in b for b in row["blockers"]), row["blockers"])
-        self.assertEqual(row["status"], "DEFERRED", "deferred stories stay available for later review")
+        self.assertTrue(any("impact review" in b for b in row["blockers"]), row["blockers"])
+        self.assertEqual(out["preflight"], [], "nothing is shared by every record here")
+        self.assertEqual(row["status"], "DEFERRED", "deferred records stay available for later review")
+
+    def test_a_pending_source_change_is_reported_once_as_preflight(self):
+        p = self.three_buckets()
+        f = self.src / "membership.md"
+        f.write_text(f.read_text(encoding="utf-8").replace("14 days", "21 days"), encoding="utf-8")
+        out = acs.triage(p)
+        self.assertEqual([x["id"] for x in out["preflight"]], ["source_change"])
+        self.assertEqual(out["eligible"], [], "nothing is eligible while the change is unreviewed")
+        self.assertEqual(out["eligible_after_preflight"], [K1, K2, K3])
+        self.assertFalse(any("source" in b for r in out["acs"] for b in r["blockers"]), "per-row blockers stay row-specific")
 
     def test_empty_queue(self):
-        p = self.to_baseline()
-        out = stories.triage(p)
-        self.assertEqual((out["stories"], out["total"], out["next"]), ([], 0, "No unapproved stories."))
+        p = self.to_ac_stage()
+        out = acs.triage(p)
+        self.assertEqual((out["acs"], out["total"], out["next"]), ([], 0, "No unapproved acceptance criteria."))
 
 
-class StoryTriageActionTests(StoryBase):
-    def test_a_chosen_story_can_be_presented_from_any_pending_folder(self):
+class AcTriageActionTests(AcBase):
+    def test_a_chosen_record_can_be_presented_from_any_pending_folder(self):
         p = self.three_buckets()
-        for sid, status in (("US-001", "IN_REVIEW"), ("US-002", "CHANGES_REQUESTED"), ("US-003", "DEFERRED")):
-            out = stories.next_story(p, sid)
-            self.assertEqual([(s["story_id"], s["status"]) for s in out["stories"]], [(sid, status)])
-        self.assertEqual(code_of(stories.next_story, p, "US-099"), "UNKNOWN_STORY")
-        self.assertTrue(p.exists("stories/unapproved/json/US-002.json") and p.exists("stories/deferred/json/US-003.json"),
-                        "presenting does not move not-approved or deferred stories")
+        for rid, status in (("LIB-001", "IN_REVIEW"), ("LIB-002", "CHANGES_REQUESTED"), ("LIB-003", "DEFERRED")):
+            out = acs.next_ac(p, rid)
+            self.assertEqual([(x["req_key"], x["status"]) for x in out["acs"]], [(key(rid), status)])
+        self.assertEqual(code_of(acs.next_ac, p, "LIB-099"), "UNKNOWN_REQUIREMENT")
+        self.assertEqual(code_of(acs.next_ac, p, "LIB-004"), "UNKNOWN_AC")
+        self.assertTrue(p.exists(f"acceptance/unapproved/{fname('LIB-002')}.json") and p.exists(f"acceptance/deferred/{fname('LIB-003')}.json"),
+                        "presenting does not move not-approved or deferred records")
+        view = acs.next_ac(p, "LIB-001")["acs"][0]["present"]
+        self.assertIn("The system must send", acs.next_ac(p, "LIB-002")["acs"][0]["present"]["card"], "the card shows the requirement text")
+        self.assertEqual(view["dialog"]["header"], "LIB-001")
 
-    def test_approve_a_pending_story(self):
+    def test_approve_a_pending_record_and_it_appears_in_the_enriched_copy(self):
         p = self.three_buckets()
-        stories.next_story(p, "US-001")
-        out = stories.approve(p, "US-001", 1, "Approved, looks right.", *OWNER)
-        self.assertEqual((out["status"], out["location"]), ("APPROVED", "stories/approved/md/US-001.md"))
-        self.assertNotIn("US-001", ids(stories.triage(p)["stories"], "story_id"))
-        self.assertEqual(self.events(p, "STORY_APPROVED")[-1]["statement"], "Approved, looks right.")
+        acs.next_ac(p, "LIB-001")
+        out = acs.approve(p, "LIB-001", 1, "Approved, looks right.", *OWNER)
+        self.assertEqual((out["status"], out["location"]), ("APPROVED", f"acceptance/approved/md/{fname('LIB-001')}.md"))
+        self.assertNotIn(K1, ids(acs.triage(p)["acs"], "req_key"))
+        self.assertEqual(self.events(p, "AC_APPROVED")[-1]["statement"], "Approved, looks right.")
+        t = self.enriched(p, "membership.md")
+        self.assertIn("AC v1", t)
+        self.assertIn("Approved by Priya Nair (Product Owner)", t)
 
-    def test_approving_a_deferred_story_goes_through_revisit_and_is_audited(self):
+    def test_approving_a_deferred_record_goes_through_revisit_and_is_audited(self):
         p = self.three_buckets()
-        self.assertEqual(code_of(stories.approve, p, "US-003", 1, "approve"), "STORY_DEFERRED")
-        stories.revisit(p, "US-003")
-        self.assertEqual(p.read_json("stories/candidates/json/US-003.json")["status"], "CANDIDATE")
-        self.assertFalse(p.exists("stories/deferred/json/US-003.json"))
-        stories.next_story(p, "US-003")
-        stories.approve(p, "US-003", 1, "Policy team confirmed; approve.", *OWNER)
-        s = p.read_json("stories/approved/json/US-003.json")
-        self.assertEqual(s["approval"]["version"], 1)
-        self.assertEqual([h["action"] for h in s["review_history"]][-4:], ["DEFERRED", "REVISITED", "PRESENTED", "APPROVED"])
-        self.assertEqual(self.events(p, "STORY_REVISITED")[-1]["from_status"], "DEFERRED")
+        self.assertEqual(code_of(acs.approve, p, "LIB-003", 1, "approve"), "AC_DEFERRED")
+        acs.revisit(p, "LIB-003")
+        self.assertEqual(p.read_json(f"acceptance/candidates/{fname('LIB-003')}.json")["status"], "CANDIDATE")
+        self.assertFalse(p.exists(f"acceptance/deferred/{fname('LIB-003')}.json"))
+        acs.next_ac(p, "LIB-003")
+        acs.approve(p, "LIB-003", 1, "Policy team confirmed; approve.", *OWNER)
+        a = p.read_json(f"acceptance/approved/{fname('LIB-003')}.json")
+        self.assertEqual(a["approval"]["version"], 1)
+        self.assertEqual([h["action"] for h in a["review_history"]][-4:], ["DEFERRED", "REVISITED", "PRESENTED", "APPROVED"])
+        self.assertEqual(self.events(p, "AC_REVISITED")[-1]["from_status"], "DEFERRED")
         self.assertTrue(checks.validate_project(p)["ok"], checks.validate_project(p))
 
-    def test_a_not_approved_story_can_be_reconsidered_and_approved_without_an_edit(self):
+    def test_a_not_approved_record_can_be_reconsidered_and_approved_without_an_edit(self):
         p = self.three_buckets()
-        self.assertEqual(code_of(stories.approve, p, "US-002", 1, "approve"), "STORY_UNAPPROVED")
-        self.assertEqual(stories.revisit(p, "US-002")["status"], "CANDIDATE")
-        self.assertFalse(p.exists("stories/unapproved/json/US-002.json"))
-        stories.approve(p, "US-002", 1, "On reflection it is fine; approve.", *OWNER)
-        self.assertTrue(p.exists("stories/approved/json/US-002.json"))
-        self.assertEqual(self.events(p, "STORY_REVISITED")[-1]["from_status"], "CHANGES_REQUESTED")
+        self.assertEqual(code_of(acs.approve, p, "LIB-002", 1, "approve"), "AC_UNAPPROVED")
+        self.assertEqual(acs.revisit(p, "LIB-002")["status"], "CANDIDATE")
+        self.assertFalse(p.exists(f"acceptance/unapproved/{fname('LIB-002')}.json"))
+        acs.approve(p, "LIB-002", 1, "On reflection it is fine; approve.", *OWNER)
+        self.assertTrue(p.exists(f"acceptance/approved/{fname('LIB-002')}.json"))
+        self.assertEqual(self.events(p, "AC_REVISITED")[-1]["from_status"], "CHANGES_REQUESTED")
         self.assertTrue(checks.validate_project(p)["ok"], checks.validate_project(p))
 
-    def test_edit_returns_the_story_for_approval_as_a_new_version(self):
+    def test_edit_returns_the_record_for_approval_as_a_new_version(self):
         p = self.three_buckets()
-        for sid in ("US-001", "US-002", "US-003"):
-            out = stories.edit(p, sid, {"title": f"Reworded {sid} title"}, "user suggested a clearer title")
+        for rid in ("LIB-001", "LIB-002", "LIB-003"):
+            crit = [f"Given a case for {rid}, when it is exercised, then the reworded outcome is observed."]
+            out = acs.edit(p, rid, {"acceptance_criteria": crit}, "user suggested clearer criteria")
             self.assertEqual((out["new_version"], out["status"], out["requires_approval"]), (2, "CANDIDATE", True))
-            self.assertTrue(p.exists(f"stories/candidates/json/{sid}.json"))
-            self.assertTrue(p.exists(f"stories/archive/json/{sid}.v1.json"), "the earlier version is kept")
-            self.assertFalse(p.exists(f"stories/approved/json/{sid}.json"), "an edit is never an approval")
+            self.assertTrue(p.exists(f"acceptance/candidates/{fname(rid)}.json"))
+            self.assertTrue(p.exists(f"acceptance/archive/{fname(rid)}.v1.json"), "the earlier version is kept")
+            self.assertFalse(p.exists(f"acceptance/approved/{fname(rid)}.json"), "an edit is never an approval")
         for bucket in ("unapproved", "deferred"):
-            self.assertEqual(list(p.path(f"stories/{bucket}").glob("US-*.json")), [])
-        self.assertEqual([(r["story_id"], r["version"], r["status"]) for r in stories.triage(p)["stories"]],
-                         [("US-001", 2, "CANDIDATE"), ("US-002", 2, "CANDIDATE"), ("US-003", 2, "CANDIDATE")])
-        self.assertEqual(code_of(stories.approve, p, "US-001", 1, "approve"), "VERSION_MISMATCH", "approval names the exact version")
-        edited = self.events(p, "STORY_EDITED")
+            self.assertEqual(list(p.path(f"acceptance/{bucket}").glob("*.json")), [])
+        self.assertEqual([(r["req_key"], r["version"], r["status"]) for r in acs.triage(p)["acs"]],
+                         [(K1, 2, "CANDIDATE"), (K2, 2, "CANDIDATE"), (K3, 2, "CANDIDATE")])
+        self.assertEqual(code_of(acs.approve, p, "LIB-001", 1, "approve"), "VERSION_MISMATCH", "approval names the exact version")
+        edited = self.events(p, "AC_EDITED")
         self.assertEqual(len(edited), 3)
         self.assertTrue(all(e["requires_reapproval"] for e in edited))
 
-    def test_editing_a_story_does_not_replace_its_approved_version(self):
+    def test_editing_approved_criteria_does_not_replace_the_approved_version(self):
         p = self.three_buckets()
-        out = stories.edit(p, "US-004", {"title": "Record loan dates and due dates"}, "clearer title")
+        out = acs.edit(p, "LIB-005", {"acceptance_criteria": ["Given a loan, when it is created, then the borrow date and the due date are both stored."]},
+                       "clearer wording")
         self.assertTrue(out["approved_version_still_in_force"])
-        self.assertEqual(p.read_json("stories/approved/json/US-004.json")["version"], 1)
-        self.assertEqual(ids(stories.triage(p)["stories"], "story_id"), ["US-001", "US-004", "US-002", "US-003"])
+        self.assertEqual(p.read_json(f"acceptance/approved/{fname('LIB-005')}.json")["version"], 1)
+        self.assertEqual(ids(acs.triage(p)["acs"], "req_key"), [K5, K1, K2, K3])
+        self.assertNotIn("borrow date and the due date are both", self.enriched(p, "lending.md"), "the document keeps showing v1")
 
-    def test_defer_a_pending_or_not_approved_story_and_it_stays_available(self):
+    def test_defer_a_pending_or_not_approved_record_and_it_stays_available(self):
         p = self.three_buckets()
-        stories.next_story(p, "US-001")
-        stories.defer(p, "US-001", 1, "need the product owner's input")
-        self.assertEqual(stories.defer(p, "US-002", 1, "park until the wording is agreed")["status"], "DEFERRED")
-        for sid in ("US-001", "US-002"):
-            self.assertTrue(p.exists(f"stories/deferred/json/{sid}.json") and p.exists(f"stories/deferred/md/{sid}.md"))
-        self.assertFalse(p.exists("stories/unapproved/json/US-002.json"))
-        self.assertEqual(self.events(p, "STORY_DEFERRED")[-1]["from_status"], "CHANGES_REQUESTED")
-        rows = {r["story_id"]: r for r in stories.triage(p)["stories"]}
-        self.assertEqual([rows[s]["status"] for s in ("US-001", "US-002", "US-003")], ["DEFERRED"] * 3)
-        self.assertEqual(rows["US-002"]["deferral"]["reason"], "park until the wording is agreed")
-        self.assertEqual(code_of(stories.defer, p, "US-001", 1, "again"), "UNKNOWN_STORY", "already deferred")
-        self.assertEqual(code_of(stories.defer, p, "US-004", 1, "x"), "UNKNOWN_STORY", "an approved story is not deferred here")
+        acs.next_ac(p, "LIB-001")
+        acs.defer(p, "LIB-001", 1, "need the product owner's input")
+        self.assertEqual(acs.defer(p, "LIB-002", 1, "park until the wording is agreed")["status"], "DEFERRED")
+        for rid in ("LIB-001", "LIB-002"):
+            self.assertTrue(p.exists(f"acceptance/deferred/{fname(rid)}.json") and p.exists(f"acceptance/deferred/{fname(rid)}.md"))
+        self.assertFalse(p.exists(f"acceptance/unapproved/{fname('LIB-002')}.json"))
+        self.assertEqual(self.events(p, "AC_DEFERRED")[-1]["from_status"], "CHANGES_REQUESTED")
+        rows = {r["req_key"]: r for r in acs.triage(p)["acs"]}
+        self.assertEqual([rows[k]["status"] for k in (K1, K2, K3)], ["DEFERRED"] * 3)
+        self.assertEqual(rows[K2]["deferral"]["reason"], "park until the wording is agreed")
+        self.assertEqual(code_of(acs.defer, p, "LIB-001", 1, "again"), "UNKNOWN_AC", "already deferred")
+        self.assertEqual(code_of(acs.defer, p, "LIB-005", 1, "x"), "UNKNOWN_AC", "approved criteria are not deferred here")
         self.assertTrue(checks.validate_project(p)["ok"], checks.validate_project(p))
 
-    def test_deferred_story_returns_to_the_review_queue_and_stays_pending_for_completion(self):
+    def test_deferred_record_returns_to_the_review_queue_and_stays_pending_for_completion(self):
         p = self.three_buckets()
-        self.assertIn("US-003", p.state["pending_story_ids"])
+        self.assertIn(K3, p.state["pending_ac_keys"])
         self.assertFalse(checks.completion(p)["complete"])
-        stories.revisit(p, "US-003")
-        out = stories.triage(p)
-        self.assertEqual((ids(out["stories"], "story_id"), out["counts"]["deferred"]), (["US-001", "US-003", "US-002"], 0))
+        acs.revisit(p, "LIB-003")
+        out = acs.triage(p)
+        self.assertEqual((ids(out["acs"], "req_key"), out["counts"]["deferred"]), ([K1, K3, K2], 0))
 
-    def test_keep_leaves_any_pending_story_unchanged_and_audits_the_decision(self):
+    def test_keep_leaves_any_pending_record_unchanged_and_audits_the_decision(self):
         p = self.three_buckets()
-        before = json.dumps([s for _, s in p.all_stories()], sort_keys=True)
-        for sid, status in (("US-001", "CANDIDATE"), ("US-002", "CHANGES_REQUESTED"), ("US-003", "DEFERRED")):
-            self.assertEqual(stories.keep(p, sid)["status"], status)
-        self.assertEqual(json.dumps([s for _, s in p.all_stories()], sort_keys=True), before)
-        kept = self.events(p, "STORY_TRIAGE_KEPT")
-        self.assertEqual([(e["story_id"], e["status"]) for e in kept],
-                         [("US-001", "CANDIDATE"), ("US-002", "CHANGES_REQUESTED"), ("US-003", "DEFERRED")])
-        self.assertEqual(code_of(stories.keep, p, "US-004"), "UNKNOWN_STORY", "approved stories are not in the triage queue")
+        before = json.dumps([a for _, a in p.all_acs()], sort_keys=True)
+        for rid, status in (("LIB-001", "CANDIDATE"), ("LIB-002", "CHANGES_REQUESTED"), ("LIB-003", "DEFERRED")):
+            self.assertEqual(acs.keep(p, rid)["status"], status)
+        self.assertEqual(json.dumps([a for _, a in p.all_acs()], sort_keys=True), before)
+        kept = self.events(p, "AC_TRIAGE_KEPT")
+        self.assertEqual([(e["req_key"], e["status"]) for e in kept], [(K1, "CANDIDATE"), (K2, "CHANGES_REQUESTED"), (K3, "DEFERRED")])
+        self.assertEqual(code_of(acs.keep, p, "LIB-005"), "UNKNOWN_AC", "approved criteria are not in the triage queue")
 
     def test_audit_and_review_history_cover_every_decision(self):
         p = self.three_buckets()
-        stories.revisit(p, "US-003")
-        stories.edit(p, "US-003", {"title": "Limit concurrent borrows to five"}, "tidy title")
-        stories.next_story(p, "US-003")
-        stories.approve(p, "US-003", 2, "Approved v2.", *OWNER)
-        trail = [e["event_type"] for e in p.audit_events() if e.get("story_id") == "US-003"]
-        self.assertEqual(trail, ["STORY_DEFERRED", "STORY_REVISITED", "STORY_EDITED", "STORY_APPROVED"])
-        hist = [h["action"] for h in p.read_json("stories/approved/json/US-003.json")["review_history"]]
+        acs.revisit(p, "LIB-003")
+        acs.edit(p, "LIB-003", {"acceptance_criteria": ["Given a member with five loans, when they borrow a sixth, then it is rejected with a limit message."]}, "tidy wording")
+        acs.next_ac(p, "LIB-003")
+        acs.approve(p, "LIB-003", 2, "Approved v2.", *OWNER)
+        trail = [e["event_type"] for e in p.audit_events() if e.get("req_key") == K3]
+        self.assertEqual(trail, ["AC_DEFERRED", "AC_REVISITED", "AC_EDITED", "AC_APPROVED"])
+        hist = [h["action"] for h in p.read_json(f"acceptance/approved/{fname('LIB-003')}.json")["review_history"]]
         self.assertEqual(hist, ["GENERATED", "PRESENTED", "DEFERRED", "REVISITED", "EDITED", "PRESENTED", "APPROVED"])
-        self.assertTrue(p.exists("stories/archive/json/US-003.v1.json"))
+        self.assertTrue(p.exists(f"acceptance/archive/{fname('LIB-003')}.v1.json"))
 
     def test_traceability_and_resume(self):
         p = self.three_buckets()
-        stories.revisit(p, "US-003")
+        acs.revisit(p, "LIB-003")
         q = Project.open(p.root)
-        self.assertEqual(stories.triage(q), stories.triage(p))
+        self.assertEqual(acs.triage(q), acs.triage(p))
         self.assertTrue(checks.traceability(q)["ok"])
         self.assertEqual(checks.validate_project(q)["errors"], [])
 
-    def test_presenting_a_story_starts_story_review(self):
-        p = self.three_buckets()
-        stories.next_story(p, "US-001")
-        self.assertEqual(p.state["stage"], "WAITING_FOR_STORY_REVIEW")
+    def test_presenting_a_record_starts_ac_review(self):
+        p = self.to_acs(2)
+        self.assertEqual(p.state["stage"], "AC_DRAFTING")
+        acs.next_ac(p, "LIB-001")
+        self.assertEqual(p.state["stage"], "WAITING_FOR_AC_REVIEW")
 
 
-class CliTests(StoryBase):
+class CliTests(AcBase):
     def test_gaps_triage_next_id_keep_and_defer_via_the_cli(self):
         p = self.with_gaps()
         self.set_owner(p)
@@ -471,15 +491,17 @@ class CliTests(StoryBase):
         self.assertEqual(self.run_ba(p.root, "gaps", "next", "--id", "GAP-404", ok=False)["error"]["code"], "UNKNOWN_GAP")
         self.assertTrue(self.run_ba(p.root, "validate")["ok"])
 
-    def test_story_triage_next_id_revisit_and_defer_via_the_cli(self):
+    def test_ac_triage_next_key_revisit_and_defer_via_the_cli(self):
         p = self.three_buckets()
-        out = self.run_ba(p.root, "story", "triage")
-        self.assertEqual((ids(out["stories"], "story_id"), out["counts"]["deferred"]), (["US-001", "US-002", "US-003"], 1))
-        self.assertEqual(self.run_ba(p.root, "story", "next", "--id", "US-003")["stories"][0]["status"], "DEFERRED")
-        self.assertEqual(self.run_ba(p.root, "story", "revisit", "US-002")["status"], "CANDIDATE")
-        self.assertEqual(self.run_ba(p.root, "story", "defer", "US-002", "--version", "1", "--reason", "later")["status"], "DEFERRED")
-        self.assertEqual(self.run_ba(p.root, "story", "triage")["counts"], {"pending_review": 1, "not_approved": 0, "deferred": 2})
-        self.assertEqual(self.run_ba(p.root, "story", "keep", "US-003")["status"], "DEFERRED")
+        out = self.run_ba(p.root, "ac", "triage")
+        self.assertEqual((ids(out["acs"], "req_key"), out["counts"]["deferred"]), ([K1, K2, K3], 1))
+        self.assertEqual(self.run_ba(p.root, "ac", "next", "--key", "LIB-003")["acs"][0]["status"], "DEFERRED")
+        self.assertEqual(self.run_ba(p.root, "ac", "revisit", "LIB-002")["status"], "CANDIDATE")
+        self.assertEqual(self.run_ba(p.root, "ac", "defer", "LIB-002", "--version", "1", "--reason", "later")["status"], "DEFERRED")
+        self.assertEqual(self.run_ba(p.root, "ac", "triage")["counts"], {"pending_review": 1, "not_approved": 0, "deferred": 2})
+        self.assertEqual(self.run_ba(p.root, "ac", "keep", "LIB-003")["status"], "DEFERRED")
+        self.assertEqual(self.run_ba(p.root, "ac", "next", "--key", "LIB-099", ok=False)["error"]["code"], "UNKNOWN_REQUIREMENT")
+        self.assertEqual(self.run_ba(p.root, "validate")["errors"], [])
 
 
 if __name__ == "__main__":
